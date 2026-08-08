@@ -4,6 +4,9 @@
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-cellular.svg)](https://www.npmjs.com/package/@zakkster/lite-cellular)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-cellular?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-cellular)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-cellular?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-cellular)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-cellular?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-cellular)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](./package.json)
 [![zero-GC](https://img.shields.io/badge/allocations-0%20on%20hot%20path-brightgreen.svg)](#zero-gc-design-notes)
