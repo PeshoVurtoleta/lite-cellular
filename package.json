@@ -1,0 +1,77 @@
+{
+  "name": "@zakkster/lite-cellular",
+  "version": "0.1.0",
+  "description": "Zero-GC Worley/cellular noise for 2D. F1/F2 feature-point distances written into a caller-owned out-struct, three metrics fixed at instance creation, zero-alloc field bakes and an exact tileable wrap. Sibling of @zakkster/lite-noise.",
+  "type": "module",
+  "main": "./Cellular.js",
+  "module": "./Cellular.js",
+  "types": "./Cellular.d.ts",
+  "exports": {
+    ".": {
+      "types": "./Cellular.d.ts",
+      "node": "./Cellular.js",
+      "import": "./Cellular.js",
+      "default": "./Cellular.js"
+    }
+  },
+  "files": [
+    "Cellular.js",
+    "Cellular.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "llms.txt",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --expose-gc --test test/*.test.js",
+    "test:watch": "node --test --watch test/*.test.js",
+    "torture": "node --expose-gc test/torture.mjs",
+    "verify": "npm test && npm run torture"
+  },
+  "devDependencies": {
+    "@zakkster/lite-gc-profiler": "^1.12.0",
+    "@zakkster/lite-leak": "^1.8.0"
+  },
+  "keywords": [
+    "worley",
+    "cellular-noise",
+    "voronoi",
+    "noise",
+    "procedural-generation",
+    "texture",
+    "distance-field",
+    "f1-f2",
+    "procedural",
+    "zero-gc",
+    "allocation-free",
+    "typed-array",
+    "float64array",
+    "canvas",
+    "webgl",
+    "shader",
+    "game-dev",
+    "masks",
+    "displacement",
+    "terrain",
+    "2d"
+  ],
+  "license": "MIT",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "homepage": "https://github.com/PeshoVurtoleta/lite-cellular#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-cellular.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-cellular/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
+  },
+  "sideEffects": false
+}

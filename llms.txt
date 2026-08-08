@@ -1,0 +1,82 @@
+# @zakkster/lite-cellular
+
+> Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v0.1.0 is the euclidean, instance-only skeleton; manhattan/chebyshev and the module free-function surface land in v1.0.0, the field baker + exact tileable wrap in v1.1.0. Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
+
+## API
+
+Named exports (v0.1.0): `createCellular`, `Cellular`, `VERSION`, `METRIC_EUCLIDEAN`.
+
+The module free-function surface (`seedCellular`, a bare `cellular2`) is NOT yet
+shipped -- v0.1.0 is instance-only, so there is no shared mutable state to seed or
+warn about. It arrives in v1.0.0 with the same dev-warn-once discipline
+`@zakkster/lite-noise`'s `seedNoise` carries.
+
+```ts
+// The euclidean metric id. The default, and the only id v0.1.0 accepts.
+// manhattan (1) and chebyshev (2) land in v1.0.0; the id space is opened now and
+// the guard rejects 1/2 until then (fail-closed -- it widens, never loosens).
+const METRIC_EUCLIDEAN: 0;
+
+// Package version, in lockstep with package.json (two-place sync).
+const VERSION: string;
+
+interface CellularResult { f1: number; f2: number; id: number; }
+interface CellularOptions { metric?: number; jitter?: number; }
+
+class Cellular {
+    // Validates metric (=== 0 else throws) and jitter (finite, [0,1] else throws)
+    // ONCE, at construction. Both immutable for the instance's life. Stores scalars
+    // plus one reused out-struct -- no permutation table.
+    constructor(seed?: number, opts?: CellularOptions);
+
+    // Sample the field. Returns { f1, f2, id }: nearest and second feature-point
+    // distances (TRUE euclidean) and the F1 owner's cell id (signed int32, SMI-safe,
+    // stable per Voronoi region). Writes into `out` if given (and returns it), else
+    // returns the instance's reused out-struct. THROWS on non-finite x or y.
+    // Zero allocation either way. `f2 - f1` (cracks) is the caller's one subtraction.
+    cellular2(x: number, y: number, out?: CellularResult): CellularResult;
+
+    // Re-seed in place. Setup cost only -- not on any hot path. Returns this.
+    reseed(seed: number): this;
+}
+
+// Create an independent instance. Throws on a bad metric id or out-of-range jitter.
+function createCellular(seed?: number, opts?: CellularOptions): Cellular;
+```
+
+## Feature points and jitter
+
+Each grid cell scatters one feature point at `cell + 0.5 + jitter*(u-0.5)` where
+`u`/`v` in `[0,1)` come from a hash of the integer cell coords + seed. `jitter` in
+`[0,1]`: `0` is the exact grid of cell centres, `1` is full Worley. The bound is a
+correctness precondition -- `jitter <= 1` keeps every feature point inside its cell,
+which is what makes the fixed 3x3 neighbourhood scan guaranteed to contain the true
+`f1`/`f2`. `cellular2` accumulates SQUARED distance in the loop and takes one sqrt
+for `f1` and one for `f2` at the end -- true euclidean distance, so `f2 - f1` and
+any cross-metric comparison stay in the same (linear) units.
+
+## Install
+
+```bash
+npm i @zakkster/lite-cellular
+```
+
+```js
+import { createCellular } from '@zakkster/lite-cellular';
+const cell = createCellular(42);
+const c = cell.cellular2(3.5, 7.25);   // { f1, f2, id }
+const cracks = c.f2 - c.f1;            // Voronoi edges, caller-side
+```
+
+## When not to use
+
+- Full Voronoi topology (edges, vertices, adjacency, Lloyd relaxation) -- a geometry
+  structure, a different library. This is the noise field, not the diagram.
+- Gradient/Simplex/Perlin noise -- that is `@zakkster/lite-noise`. No overlap.
+- Curl/flow off cellular -- `f1` has derivative discontinuities at cell boundaries
+  by construction, so it cannot feed an analytic flow field. Use lite-noise for flow.
+- Cryptographic seeding -- the hash is for reproducible scatter, not security.
+
+## License
+
+MIT (c) Zahary Shinikchiev
