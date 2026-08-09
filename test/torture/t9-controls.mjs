@@ -35,6 +35,11 @@ import { createLeakTracker } from '@zakkster/lite-leak';
 import { runOpsGate, runAllocGate, die } from './harness.mjs';
 import { COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, digest } from '../../goldens/gen.mjs';
 import { instanceIsolationHolds, sharedSeedFactory } from './t5-fuzz.mjs';
+import { exactPeriodicityHolds } from './t0-laws.mjs';
+import { bakeAllocating, bakeComboParse, tileHashRawCell } from './broken.mjs';
+
+/** Escaping sinks for the C2 bake controls, so V8 cannot elide the retained allocs. */
+const bakeSink = [];
 
 const NOOP = function () {};
 const held = [];
@@ -118,6 +123,49 @@ export async function run() {
     // instance-isolation law return false. If it holds, T5 is blind.
     if (instanceIsolationHolds(sharedSeedFactory())) {
         die('T9 control(shared-seed): the isolation law did NOT catch a shared-seed build -- T5 is blind');
+    }
+
+    // --- C2 controls: every new gate proven able to fail --------------------
+
+    // C2 (a) -- a baker that allocates a RETAINED per-pixel out-struct (0005
+    // anti-pattern). The T6 zero-retention gate must reject it.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const dst = new Float64Array(8 * 8);
+        // Do NOT clear the sink inside the hot body: the retained per-pixel structs
+        // must ACCUMULATE across iterations so measureAllocs reads bytes > 0.
+        const hot = () => { bakeAllocating(inst, dst, 8, 8, { combo: 'f1' }, bakeSink); };
+        const { report, result } = runAllocGate(hot, { iterations: 300, batches: 4, reps: 1 });
+        if (report.verdict !== 'fail') {
+            die('T9 control(bake-alloc): a per-pixel-allocating baker passed the zero-retention gate ' +
+                '(bytesPerCall=' + result.bytesPerCall + ') -- the bake gate cannot fail');
+        }
+        bakeSink.length = 0;
+    }
+
+    // C2 (b) -- a tiling kernel that hashes the UNWRAPPED cell (wraps the float
+    // coord, not the integer cell -- 0006 anti-pattern). It must NOT be exactly
+    // periodic; if it is, the T0 periodicity law is blind.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const brokenSample = (x, y, P, Q, o) => tileHashRawCell(inst._seed, inst._jitter, P, Q, x, y, o);
+        if (exactPeriodicityHolds(brokenSample)) {
+            die('T9 control(float-wrap): a raw-cell-hash tiling kernel was still exactly periodic -- the periodicity law is blind');
+        }
+    }
+
+    // C2 (c) -- a baker that re-parses the combo STRING per pixel (0005 anti-pattern),
+    // the parse retained. The zero-retention gate must reject it.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const dst = new Float64Array(8 * 8);
+        const hot = () => { bakeComboParse(inst, dst, 8, 8, { combo: 'f2-f1' }, bakeSink); };
+        const { report, result } = runAllocGate(hot, { iterations: 300, batches: 4, reps: 1 });
+        if (report.verdict !== 'fail') {
+            die('T9 control(combo-parse): a per-pixel combo-string-parse baker passed the zero-retention gate ' +
+                '(bytesPerCall=' + result.bytesPerCall + ') -- the bake gate cannot fail');
+        }
+        bakeSink.length = 0;
     }
 
     // Control 3 (C0) -- the retention detector: a dropped instance must collect

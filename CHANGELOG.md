@@ -3,6 +3,73 @@
 All notable changes to `@zakkster/lite-cellular` are documented here.
 The format follows Keep a Changelog; this package adheres to SemVer.
 
+## [1.1.0] - 2026-08-09
+
+The texture surface (session C2): the zero-alloc field baker and the exactly-seamless
+tile -- the money surface -- plus the proven sibling relationship with `lite-noise`.
+The plain `cellular2` path is BYTE-UNCHANGED from 1.0.0: all three goldens re-derive
+(`33a16e9e` / `fa25dafd` / `5e5cbfa6`), and no modulo or branch leaked into the
+per-query hot loop.
+
+### Added
+- **`fillCellField2(dst, w, h, opts?) -> dst`** (instance method) -- bake a `w*h`
+  cellular field into a caller-owned `Float64Array`/`Float32Array`, row-major,
+  ALLOCATION-FREE (`decisions/0005`). The baker owns nothing: it validates `dst` (a
+  typed array, `length >= w*h`) and `w`/`h` (positive integers) and throws otherwise
+  (fail closed -- no silent short write). `combo` (`'f1'` / `'f2-f1'` alias `'cracks'`
+  / `'f2'`) is decoded to a small-int selector ONCE before the loop -- never a
+  per-pixel string parse; the metric is the instance's, bound once -- no per-pixel
+  branch; the scan writes one reused scratch struct -- no per-pixel object. `normalize`
+  is an opt-in in-place two-pass remap to `[0,1]` (a constant field maps to all-zero,
+  never NaN). `opts` uses `opts?.k ?? default` (no `opts = {}`), so the omitted-opts
+  path allocates nothing. An unknown `combo` throws with a did-you-mean hint.
+- **`tileableCell2(x, y, periodX, periodY, out?) -> {f1,f2,id}`** (instance method) --
+  `cellular2` with each neighbour's INTEGER cell coordinate reduced mod an integer
+  period, so the field is EXACTLY periodic (`===`, not epsilon) and seamless by
+  construction (`decisions/0006`). `periodX`/`periodY` are required positive integers
+  (`0`, negatives, non-integers, `NaN`, `Infinity` throw). With `opts.periodX`/
+  `periodY` set, `fillCellField2` bakes a seamless tile (the same wrap in the bake
+  loop).
+- **Three tiling kernels** (`_tileableCell2Euclid` / `_Manhattan` / `_Chebyshev`)
+  bound once as `this._tileKernel` alongside `this._kernel` -- six kernels total, the
+  duplication deliberate (monomorphism, `decisions/0001`/`0006`). They compute the
+  distance in the query cell's LOCAL frame so the `===` wrap is real, not epsilon; the
+  absolute-frame variant (the 0006 anti-pattern) is the T9/T0 float-wrap control.
+- **The seamlessScore proof** -- a 256x256 period-4 cellular tile scores ~0.012
+  (`@zakkster/lite-patternforge` `seamlessScore`, imperceptible), materially below a
+  `lite-noise` `tileableField2` gradient tile scored the same way (~0.024). Run in
+  torture T8 and `examples/seamless-tile.mjs`.
+- **Three composability examples** (`examples/`, CI-asserted via
+  `test/examples.test.js`, OUT of `files[]`): `weathered-stone.mjs` (cellular cracks x
+  lite-noise fbm), `f1-through-gradient-lut.mjs` (F1 through a lite-gradient-studio
+  LUT), `seamless-tile.mjs` (the seam proof as a user-facing recipe).
+- **Torture extended**: T0 (exact-periodicity all metrics, bake==per-query plain +
+  tiling each combo, combo algebra), T5 (bake determinism + two-instance / module
+  isolation), T6 (the field bake + `tileableCell2` at `maxArrayBuffersGrowth: 0` with
+  a `dst.buffer.byteLength` assert + the zero-retention lane), T3 (bake/tile parameter
+  extremes: 1x1 and large bakes, period 1 and huge, world-scale ox/oy, unknown combo
+  throws), T8 (the seam proof), T9 (three new controls: a per-pixel out-struct baker,
+  a raw-cell-hash tiling kernel, a per-pixel combo string parse). New break controls
+  `CELLULAR_TORTURE_BREAK_BAKER=1`, `CELLULAR_TORTURE_BREAK_COMBOPARSE=1`,
+  `CELLULAR_TORTURE_BREAK_FLOATWRAP=1` each exit non-zero.
+- **`bench/bench.mjs`** extended with `fillCellField2` (per combo, plain + tiling) and
+  `tileableCell2`; `bench/BASELINE.md` updated. All bakes read `bytesPerCall: 0`.
+
+### Changed
+- `VERSION` -> `1.1.0` (in lockstep with `package.json` and `llms.txt`).
+- **`CELLULAR_BYTE_CEILING` raised 17408 -> 33792** to seat the three tiling kernels
+  and the two new methods with their doc comments (Cellular.js is ~31 KB). A
+  deliberate bump, noted here.
+- Decision records `0005` and `0006` closed (`Status: accepted, 2026-08-09`) with
+  their Measured tables filled from the built baker/tile.
+- devDeps added: `@zakkster/lite-patternforge`, `@zakkster/lite-noise`,
+  `@zakkster/lite-gradient-studio` (examples + the seam proof only; Cellular.js keeps
+  zero runtime dependencies).
+
+### Planned
+- **v1.2.0 (C3):** `cellular3` / `fillCellField3` -- the 3x3x3 = 27-cell loop, and
+  `tileableCell3` carrying the identical integer-cell wrap.
+
 ## [1.0.0] - 2026-08-08
 
 The honest core (session C1): the three distance metrics, the module free-function
@@ -107,5 +174,6 @@ bite. Everything later extends this command.
 - **v1.2.0 (C3):** `cellular3` / `fillCellField3` -- the 3x3x3 = 27-cell loop on
   the same zero-alloc bar.
 
+[1.1.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v1.1.0
 [1.0.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v1.0.0
 [0.1.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v0.1.0

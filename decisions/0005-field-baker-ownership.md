@@ -1,6 +1,6 @@
 # 0005 -- field baker owns nothing; combo resolved once (C2, v1.1.0)
 
-Status: accepted (design-locked ahead of C2), 2026-08-06.
+Status: accepted, 2026-08-09.
 Anchor: D-05 (ROADMAP.md section 2)
 Owner: C2
 Depends on: 0001-metric-selection (the metric binds once, same as the instance),
@@ -116,9 +116,29 @@ V8-heap gate is blind to.
 
 ## Measured
 
-Greenfield: no before. Contract is the alloc gate on the bake (`bytesPerOp: 0` per
-pixel, `maxArrayBuffersGrowth: 0`), not throughput. The C2 build fills a
-`fillCellField2` (per metric x combo) ops/sec table at ship; left empty here.
+Greenfield: no before. The contract is the alloc gate on the bake -- per-bake
+retained bytes `bytesPerCall: 0` (measureAllocs) AND the whole-window
+`maxArrayBuffersGrowth: 0` with a `dst.buffer.byteLength`-unchanged assert (torture
+T6; `dst` is ArrayBuffer-backed, invisible to the V8-heap gate). Both hold for the
+plain and tiling bake, every combo. Throughput is indicative only.
+
+Built baker, `node --expose-gc bench/bench.mjs`, best-of-5, node v26.3.1, Apple
+Silicon (one op = one 64x64 = 4096-px field):
+
+| bake (64x64) | fields/sec | ~Mpx/s | bytesPerCall (contract) |
+| --- | --- | --- | --- |
+| f1 (plain) | ~11000 | ~45 | 0 |
+| f2-f1 (plain) | ~10800 | ~44 | 0 |
+| f2 (plain) | ~10800 | ~44 | 0 |
+| f1 (tiling) | ~5800 | ~24 | 0 |
+| f2-f1 (tiling) | ~6000 | ~24 | 0 |
+| f2 (tiling) | ~6000 | ~24 | 0 |
+
+The combo makes no measurable difference (both distances fall out of the same scan;
+combo is one select on two locals). Tiling runs at ~half the plain rate -- the two
+integer `_wrap` reductions per neighbour, the price of the exact seam (0006). The
+`bytesPerCall: 0` result is the load-bearing one; the T9 controls (a per-pixel
+out-struct baker, a per-pixel combo string parse) each trip the gate, so it can fail.
 
 ## Consequences
 

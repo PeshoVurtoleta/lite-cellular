@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-cellular -- node:test unit suite (v1.0.0 / C1).
+ * @zakkster/lite-cellular -- node:test unit suite (v1.1.0 / C2).
  *
  *     node --expose-gc --test test/*.test.js
  *
@@ -17,13 +17,16 @@ import {
     cellular2 as moduleCellular2, seedCellular,
 } from '../Cellular.js';
 import { COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, METRICS, digest } from '../goldens/gen.mjs';
+import { createNoise } from '@zakkster/lite-noise';
+import { seamlessScore } from '@zakkster/lite-patternforge';
+import { bakeGradientToLut, sampleLut, gradientOcean } from '@zakkster/lite-gradient-studio';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 // --- Construction -----------------------------------------------------------
 
 test('construction: exported surface and defaults', () => {
-    assert.equal(VERSION, '1.0.0');
+    assert.equal(VERSION, '1.1.0');
     assert.equal(METRIC_EUCLIDEAN, 0);
     assert.equal(METRIC_MANHATTAN, 1);
     assert.equal(METRIC_CHEBYSHEV, 2);
@@ -316,6 +319,184 @@ test('isolation: seedCellular does not perturb an instance', () => {
     for (const s of [1, 2, 3, 999]) seedCellular(s);
     const after = inst.cellular2(5.5, 6.6, { f1: 0, f2: 0, id: 0 }).id;
     assert.equal(after, before, 'an instance must never read the shared module seed');
+});
+
+// --- Field bake (C2) --------------------------------------------------------
+
+test('field bake: writes w*h in place, returns dst', () => {
+    const c = createCellular(42);
+    const dst = new Float64Array(8 * 6).fill(-1);
+    const r = c.fillCellField2(dst, 8, 6, { combo: 'f1', scale: 0.05 });
+    assert.equal(r, dst, 'returns the same dst reference');
+    for (let i = 0; i < dst.length; i++) assert.ok(dst[i] >= 0 && Number.isFinite(dst[i]), 'pixel ' + i);
+});
+
+test('field bake: a hand-pinned small field matches per-query values, bit-for-bit', () => {
+    const c = createCellular(2024, { metric: METRIC_MANHATTAN, jitter: 1 });
+    const w = 5, h = 4, scale = 0.07, ox = 0.3, oy = -0.2;
+    const dst = new Float64Array(w * h);
+    c.fillCellField2(dst, w, h, { combo: 'f2', scale, ox, oy });
+    const o = { f1: 0, f2: 0, id: 0 };
+    let idx = 0, py = oy;
+    for (let y = 0; y < h; y++) {
+        let px = ox;
+        for (let x = 0; x < w; x++) {
+            c.cellular2(px, py, o);
+            assert.equal(dst[idx++], o.f2, `pixel (${x},${y})`);
+            px += scale;
+        }
+        py += scale;
+    }
+});
+
+test('field bake: Float32Array dst is accepted', () => {
+    const c = createCellular(1);
+    const dst = new Float32Array(16);
+    assert.doesNotThrow(() => c.fillCellField2(dst, 4, 4, { combo: 'f1' }));
+});
+
+test('field bake: undersized or wrong-type dst throws (fail closed)', () => {
+    const c = createCellular(1);
+    assert.throws(() => c.fillCellField2(new Float64Array(3), 4, 4), /dst too small/);
+    assert.throws(() => c.fillCellField2([0, 0, 0, 0], 2, 2), /typed-array dst/);
+    assert.throws(() => c.fillCellField2(new DataView(new ArrayBuffer(64)), 2, 2), /typed-array dst/);
+});
+
+test('field bake: non-positive-integer w/h throws', () => {
+    const c = createCellular(1);
+    const dst = new Float64Array(64);
+    for (const [w, h] of [[0, 4], [4, 0], [-1, 4], [2.5, 4], [4, NaN], [4, Infinity]]) {
+        assert.throws(() => c.fillCellField2(dst, w, h), /positive integer w and h/, `(${w},${h})`);
+    }
+});
+
+// --- Combo (C2) -------------------------------------------------------------
+
+test('combo: f1 / f2-f1 / cracks / f2 select correctly; cracks == f2-f1', () => {
+    const c = createCellular(7);
+    const w = 12, h = 12, n = w * h;
+    const f1 = new Float64Array(n), f2 = new Float64Array(n), d = new Float64Array(n), cr = new Float64Array(n);
+    c.fillCellField2(f1, w, h, { combo: 'f1' });
+    c.fillCellField2(f2, w, h, { combo: 'f2' });
+    c.fillCellField2(d, w, h, { combo: 'f2-f1' });
+    c.fillCellField2(cr, w, h, { combo: 'cracks' });
+    for (let i = 0; i < n; i++) {
+        assert.equal(d[i], f2[i] - f1[i], 'f2-f1 pixel ' + i);
+        assert.equal(cr[i], d[i], 'cracks alias pixel ' + i);
+        assert.ok(f1[i] <= f2[i], 'f1<=f2 pixel ' + i);
+    }
+});
+
+test('combo: an unknown combo throws with a did-you-mean hint', () => {
+    const c = createCellular(1);
+    const dst = new Float64Array(16);
+    assert.throws(() => c.fillCellField2(dst, 4, 4, { combo: 'f3' }),
+        /unknown combo 'f3'.*'f1', 'f2-f1' \(alias 'cracks'\), or 'f2'/);
+});
+
+// --- Normalize (C2) ---------------------------------------------------------
+
+test('normalize: opt-in remaps to [0,1]; off by default leaves the raw range', () => {
+    const c = createCellular(11);
+    const w = 20, h = 20, n = w * h;
+    const raw = new Float64Array(n), nrm = new Float64Array(n);
+    c.fillCellField2(raw, w, h, { combo: 'f1', scale: 0.05 });
+    c.fillCellField2(nrm, w, h, { combo: 'f1', scale: 0.05, normalize: true });
+    // Off by default leaves the raw distance range: raw min is not pinned to 0 nor max to 1.
+    let rawMin = Infinity, rawMax = -Infinity;
+    for (let i = 0; i < n; i++) { rawMin = Math.min(rawMin, raw[i]); rawMax = Math.max(rawMax, raw[i]); }
+    assert.ok(!(Math.abs(rawMin) < 1e-12 && Math.abs(rawMax - 1) < 1e-12), 'raw field is NOT already [0,1] (normalize is a real op)');
+    // Opt-in remaps to exact [0,1].
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < n; i++) { mn = Math.min(mn, nrm[i]); mx = Math.max(mx, nrm[i]); }
+    assert.ok(Math.abs(mn - 0) < 1e-12 && Math.abs(mx - 1) < 1e-12, `normalized range [${mn},${mx}]`);
+    // The normalized field preserves ordering: argmin(raw) -> 0, argmax(raw) -> 1.
+    for (let i = 0; i < n; i++) {
+        if (raw[i] === rawMin) assert.ok(Math.abs(nrm[i]) < 1e-12, 'raw min maps to 0');
+        if (raw[i] === rawMax) assert.ok(Math.abs(nrm[i] - 1) < 1e-12, 'raw max maps to 1');
+    }
+});
+
+test('normalize: a constant field maps to all-zero (no NaN, no divide-by-zero)', () => {
+    // jitter=0 at each cell centre gives f1=0 everywhere -> a constant (zero) field.
+    const c = createCellular(3, { jitter: 0 });
+    const w = 4, h = 4, n = w * h;
+    const dst = new Float64Array(n);
+    // Sample exactly at cell centres: ox=0.5, scale=1 -> every pixel is a centre, f1=0.
+    c.fillCellField2(dst, w, h, { combo: 'f1', scale: 1, ox: 0.5, oy: 0.5, normalize: true });
+    for (let i = 0; i < n; i++) assert.equal(dst[i], 0, 'constant field pixel ' + i + ' -> 0, not NaN');
+});
+
+// --- Tileable (C2) ----------------------------------------------------------
+
+test('tileable: exact periodicity on opposite edges (bit-identical f1/f2/id)', () => {
+    for (const id of [METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV]) {
+        const c = createCellular(1337, { metric: id, jitter: 1 });
+        const P = 4, Q = 8;
+        const a = { f1: 0, f2: 0, id: 0 }, b = { f1: 0, f2: 0, id: 0 };
+        // Dyadic coords so the query fraction is bit-stable across the +period shift.
+        for (let k = -3; k <= 3; k++) for (let j = 0; j < 64; j += 7) {
+            const x = k + j / 64, y = (k * 2) + (j % 32) / 64;
+            c.tileableCell2(x, y, P, Q, a);
+            c.tileableCell2(x + P, y, P, Q, b);
+            assert.equal(b.f1, a.f1); assert.equal(b.f2, a.f2); assert.equal(b.id, a.id);
+            c.tileableCell2(x, y + Q, P, Q, b);
+            assert.equal(b.f1, a.f1); assert.equal(b.f2, a.f2); assert.equal(b.id, a.id);
+        }
+    }
+});
+
+test('tileable: id repeats across tiles (a region tag flat-shades every copy)', () => {
+    const c = createCellular(99, { jitter: 1 });
+    const P = 3, Q = 3;
+    const a = { f1: 0, f2: 0, id: 0 }, b = { f1: 0, f2: 0, id: 0 };
+    c.tileableCell2(1.5, 1.5, P, Q, a);
+    c.tileableCell2(1.5 + P, 1.5 + Q, P, Q, b);
+    assert.equal(b.id, a.id, 'id at (1.5,1.5) repeats at (1.5+P, 1.5+Q)');
+});
+
+test('tileable: non-integer / <1 / NaN / Infinity period throws (fail closed)', () => {
+    const c = createCellular(1);
+    for (const [P, Q] of [[0, 4], [4, 0], [-1, 4], [4, -2], [1.5, 4], [4, 2.5], [NaN, 4], [4, NaN], [Infinity, 4], [4, Infinity]]) {
+        assert.throws(() => c.tileableCell2(0.5, 0.5, P, Q), /positive integer periodX and periodY/, `(${P},${Q})`);
+    }
+});
+
+test('tileable: period 1x1 and a huge period are finite, no throw', () => {
+    const c = createCellular(1);
+    for (const [P, Q] of [[1, 1], [1 << 20, 1 << 20]]) {
+        const r = c.tileableCell2(3.3, 4.4, P, Q);
+        assert.ok(Number.isFinite(r.f1) && Number.isFinite(r.f2) && r.f1 <= r.f2, `period ${P}x${Q}`);
+    }
+});
+
+// --- Seam (C2) --------------------------------------------------------------
+
+function paintSeamU32(field, w, h, lut) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < field.length; i++) { const v = field[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    const span = (hi - lo) || 1;
+    const tex = new Uint32Array(field.length);
+    for (let i = 0; i < field.length; i++) tex[i] = sampleLut(lut, (field[i] - lo) / span) >>> 0;
+    return tex;
+}
+
+test('seam: cellular tile seamlessScore is near-zero and below a gradient tile', () => {
+    const W = 256, H = 256, P = 4;
+    const lut = bakeGradientToLut(gradientOcean, 256);
+    const cell = createCellular(42, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+    const cf = new Float64Array(W * H);
+    cell.fillCellField2(cf, W, H, { combo: 'f1', scale: P / W, periodX: P, periodY: P });
+    const cellScore = seamlessScore(paintSeamU32(cf, W, H, lut), W, H);
+
+    const noise = createNoise(42);
+    const nf = new Float64Array(W * H);
+    noise.tileableField2(nf, W, H, { model: 'fbm', periodX: P, periodY: P, octaves: 5 });
+    const gradScore = seamlessScore(paintSeamU32(nf, W, H, lut), W, H);
+
+    assert.ok(cellScore.overall < 0.02, `cellular overall ${cellScore.overall} not near-zero (< 0.02)`);
+    assert.ok(cellScore.overall < gradScore.overall,
+        `cellular ${cellScore.overall} not below gradient ${gradScore.overall}`);
 });
 
 // --- Goldens ----------------------------------------------------------------

@@ -40,12 +40,51 @@ import {
     METRIC_MANHATTAN,
     METRIC_CHEBYSHEV,
 } from '../../Cellular.js';
-import { makePrng, SEED, assertHot } from './harness.mjs';
+import { makePrng, SEED, assertHot, die, BREAK_FLOATWRAP } from './harness.mjs';
+import { tileHashRawCell } from './broken.mjs';
 import { COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, METRICS, digest } from '../../goldens/gen.mjs';
 
 const N = 4096;         // corpus size
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EPS = 1e-9;
+
+// A representable (dyadic) tile corpus: integer base + j/64 fraction, small and
+// large bases straddling zero. On such coords the fractional home-cell position
+// `rx = x - floor(x)` is bit-stable under a +period shift, so exact `===`
+// periodicity is well-defined -- a coordinate-sampled float field is exactly
+// periodic only where the query coord's fraction is preserved across the shift, and
+// the integer-cell wrap makes it so on representable coords (0006 Decision 2). The
+// per-region `id` is exactly periodic on ANY coord (it is a pure integer-cell hash).
+const TILE_PX = 4, TILE_PY = 8;
+const TILE_COORDS = (() => {
+    const bases = [0, 3, -5, 16, 128, 1024];
+    const arr = [];
+    for (const bx of bases) for (let j = 0; j < 64; j += 5) arr.push(bx + j / 64);
+    return arr;
+})();
+
+/**
+ * The exact-periodicity law as a predicate over a tile sampler, so T9 (and the
+ * BREAK_FLOATWRAP control) can run it against a broken kernel. True iff
+ * `tile(x,y) === tile(x+P,y)` and `=== tile(x,y+Q)` bit-for-bit (f1/f2/id) over the
+ * dyadic corpus.
+ * @param {(x:number,y:number,P:number,Q:number,out:object)=>object} sampleTile
+ */
+export function exactPeriodicityHolds(sampleTile) {
+    const a = { f1: 0, f2: 0, id: 0 }, b = { f1: 0, f2: 0, id: 0 };
+    for (let i = 0; i < TILE_COORDS.length; i++) {
+        const x = TILE_COORDS[i];
+        for (let k = 0; k < TILE_COORDS.length; k += 3) {
+            const y = TILE_COORDS[k];
+            sampleTile(x, y, TILE_PX, TILE_PY, a);
+            sampleTile(x + TILE_PX, y, TILE_PX, TILE_PY, b);
+            if (a.f1 !== b.f1 || a.f2 !== b.f2 || a.id !== b.id) return false;
+            sampleTile(x, y + TILE_PY, TILE_PX, TILE_PY, b);
+            if (a.f1 !== b.f1 || a.f2 !== b.f2 || a.id !== b.id) return false;
+        }
+    }
+    return true;
+}
 
 export function run() {
     const prng = makePrng(SEED);
@@ -154,6 +193,90 @@ export function run() {
         }
         assertHot(distinct > 1,
             () => `T0.id[${name}]: all ${ids.length} sampled cells share one id -- ids not per-cell (seed=${SEED})`);
+    }
+
+    // --- C2 laws: exact tile periodicity, bake == per-query, combo algebra -----
+
+    // BREAK_FLOATWRAP control: run the periodicity law against a kernel that hashes
+    // the UNWRAPPED cell (the 0006 float-coord anti-pattern). It must NOT be periodic;
+    // if it is, the law is blind. Either outcome exits non-zero (mirrors T5's
+    // shared-seed env control).
+    if (BREAK_FLOATWRAP) {
+        const bad = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const brokenSample = (x, y, P, Q, o) => tileHashRawCell(bad._seed, bad._jitter, P, Q, x, y, o);
+        if (exactPeriodicityHolds(brokenSample)) {
+            die('T0 float-wrap control: a raw-cell-hash tiling kernel was STILL exactly periodic -- the law is blind');
+        }
+        die('T0 float-wrap control tripped as designed (a raw-cell hash is not periodic) -- exiting non-zero');
+    }
+
+    // (h) exact periodicity, all three metrics -- bit-identical across a +period
+    // shift (0006 Decision 2). This is `===`, not approximate.
+    for (const [name, id] of [['euclid', METRIC_EUCLIDEAN], ['manhat', METRIC_MANHATTAN], ['cheby', METRIC_CHEBYSHEV]]) {
+        const inst = createCellular(1337, { metric: id, jitter: 1 });
+        const sample = (x, y, P, Q, o) => inst.tileableCell2(x, y, P, Q, o);
+        assertHot(exactPeriodicityHolds(sample),
+            () => `T0.periodicity[${name}]: tileableCell2 not bit-identical across a +period shift`);
+    }
+
+    // (i) bake == per-query, plain and tiling, each combo, bit-for-bit (0005). The
+    // bake writes exactly what the trusted per-query surface returns at the same
+    // world coord (accumulated identically, `px += scale`).
+    {
+        const inst = createCellular(2024, { metric: METRIC_MANHATTAN, jitter: 1 });
+        const w = 12, h = 9;
+        const dst = new Float64Array(w * h);
+        const o = { f1: 0, f2: 0, id: 0 };
+        const combos = [['f1', 0], ['f2-f1', 1], ['cracks', 1], ['f2', 2]];
+        for (const [combo, selv] of combos) {
+            inst.fillCellField2(dst, w, h, { combo, scale: 0.05, ox: 0.3, oy: -0.2 });
+            let idx = 0, py = -0.2;
+            for (let yy = 0; yy < h; yy++) {
+                let px = 0.3;
+                for (let xx = 0; xx < w; xx++) {
+                    inst.cellular2(px, py, o);
+                    const exp = selv === 0 ? o.f1 : selv === 1 ? o.f2 - o.f1 : o.f2;
+                    assertHot(dst[idx++] === exp,
+                        () => `T0.bake-plain[${combo}]: pixel (${xx},${yy}) != per-query cellular2`);
+                    px += 0.05;
+                }
+                py += 0.05;
+            }
+        }
+        const P = 4, Q = 4;
+        for (const [combo, selv] of combos) {
+            inst.fillCellField2(dst, w, h, { combo, scale: 0.05, ox: 0, oy: 0, periodX: P, periodY: Q });
+            let idx = 0, py = 0;
+            for (let yy = 0; yy < h; yy++) {
+                let px = 0;
+                for (let xx = 0; xx < w; xx++) {
+                    inst.tileableCell2(px, py, P, Q, o);
+                    const exp = selv === 0 ? o.f1 : selv === 1 ? o.f2 - o.f1 : o.f2;
+                    assertHot(dst[idx++] === exp,
+                        () => `T0.bake-tiling[${combo}]: pixel (${xx},${yy}) != per-query tileableCell2`);
+                    px += 0.05;
+                }
+                py += 0.05;
+            }
+        }
+    }
+
+    // (j) combo algebra: the f2-f1 field equals the f2 field minus the f1 field
+    // pixel-wise, and cracks aliases f2-f1 (0005 Decision 2), all bit-for-bit.
+    {
+        const inst = createCellular(7, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const w = 16, h = 16, n = w * h;
+        const f1 = new Float64Array(n), f2 = new Float64Array(n), d = new Float64Array(n), cr = new Float64Array(n);
+        inst.fillCellField2(f1, w, h, { combo: 'f1' });
+        inst.fillCellField2(f2, w, h, { combo: 'f2' });
+        inst.fillCellField2(d, w, h, { combo: 'f2-f1' });
+        inst.fillCellField2(cr, w, h, { combo: 'cracks' });
+        for (let i = 0; i < n; i++) {
+            assertHot(d[i] === f2[i] - f1[i],
+                () => `T0.combo-algebra: (f2-f1) field != f2 - f1 at pixel ${i}`);
+            assertHot(cr[i] === d[i],
+                () => `T0.combo-algebra: cracks alias != f2-f1 at pixel ${i}`);
+        }
     }
 
     // (g) golden -- the committed euclidean / manhattan / chebyshev digests all

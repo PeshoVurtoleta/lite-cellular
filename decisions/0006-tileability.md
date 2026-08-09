@@ -1,6 +1,6 @@
 # 0006 -- tileability: wrap integer cell coords mod period, exactly (C2, v1.1.0)
 
-Status: accepted (design-locked ahead of C2), 2026-08-06.
+Status: accepted, 2026-08-09.
 Anchor: D-06 (ROADMAP.md section 2)
 Owner: C2
 Depends on: 0003-jitter-and-hash (the wrap changes ONLY the hash's coord inputs;
@@ -106,10 +106,33 @@ bake at `maxArrayBuffersGrowth: 0`; T0 gains the exact-wrap laws.
 ## Measured
 
 Greenfield: no before. Contract is the alloc gate plus a **seam proof**, not
-throughput: (a) `tileableCell2` at matching phase on opposite edges is
-bit-identical (exact periodicity), and (b) `seamlessScore` on a tiled bake reads
-near-zero and materially below the gradient tile's floor. Both run at C2; the
-ops/sec table is filled at ship.
+throughput.
+
+**Exact periodicity (torture T0).** `tileableCell2(x,y,P,Q)` is bit-identical to
+`(x+P,y,P,Q)` and `(x,y+Q,P,Q)` for f1/f2/id, all three metrics, across a dyadic
+corpus (integer part + j/64 fraction, bases straddling zero). `===`, not epsilon.
+Implementation note that made this real: the tiling kernels compute the distance in
+the query cell's LOCAL frame (`rx = x - floor(x)`, feature offset `gx + 0.5 +
+jitter*(u-0.5)`), not the absolute frame `fx - x` -- the absolute frame loses the low
+bits at the shifted magnitude and would wrap only to float epsilon (the anti-pattern
+this record rejects). `id` is exactly periodic on ANY coord (a pure integer-cell hash).
+The T9 float-wrap control (a kernel that hashes the UNWRAPPED cell) is NOT periodic,
+so the law can fail.
+
+**Seam proof (torture T8 / `examples/seamless-tile.mjs`).** A 256x256 period-4
+cellular tile, coloured through `gradientOcean`, scored by
+`@zakkster/lite-patternforge` `seamlessScore` (lower better; < 0.02 imperceptible):
+
+| tile | seamlessScore overall |
+| --- | --- |
+| cellular `fillCellField2` (exact integer-cell wrap) | ~0.012 |
+| lite-noise `tileableField2` fbm (lattice wrap, same paint) | ~0.024 |
+
+Genuinely near-zero and materially below the gradient tile: the exact wrap makes the
+seam step equal a normal interior step. Throughput (best-of-5, node v26.3.1):
+`tileableCell2` euclidean ~10.8 Mops/s; a tiling 64x64 bake ~5.8-6.0 K fields/sec
+(~24 Mpx/s), ~half the plain rate -- the two `_wrap` reductions per neighbour.
+`bytesPerCall: 0` throughout.
 
 ## Consequences
 

@@ -26,11 +26,12 @@
  * @license MIT
  */
 
-import { createCellular, cellular2 } from '../../Cellular.js';
+import { createCellular, cellular2, METRIC_EUCLIDEAN } from '../../Cellular.js';
 import {
-    runOpsGate, runAllocGate, BREAK, SAMPLES, OUT,
+    runOpsGate, runAllocGate, BREAK, BREAK_BAKER, BREAK_COMBOPARSE, SAMPLES, OUT,
     makePrng, SEED, assertHot, die,
 } from './harness.mjs';
+import { bakeAllocating, bakeComboParse } from './broken.mjs';
 
 const OPS = 120000;
 const WARMUP = 4000;
@@ -106,4 +107,78 @@ export function run() {
     const { report: aM, result: resM } = runAllocGate(allocHotM, {});
     assertHot(aM.verdict !== 'fail',
         () => `T6[module] zero-retention gate rejected -- bytesPerCall=${resM.bytesPerCall}`);
+
+    // --- C2: the field bake, where the ArrayBuffer gate earns its keep -------
+    // `dst` is an ArrayBuffer-backed store the V8-heap gate is blind to, so the
+    // whole-window `maxArrayBuffersGrowth:0` + the `dst.buffer.byteLength` assert are
+    // the load-bearing checks; the zero-retention lane is the exact per-call proof.
+    const BW = 32, BH = 32;
+    const dst = new Float64Array(BW * BH);
+    const bakeInst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+    const combos = ['f1', 'f2-f1', 'cracks', 'f2'];
+
+    // BREAK controls: gate a broken baker (per-pixel out-struct, or per-pixel combo
+    // string parse). It MUST be rejected; either outcome exits non-zero.
+    if (BREAK_BAKER || BREAK_COMBOPARSE) {
+        const sink = [];
+        const small = new Float64Array(8 * 8);
+        // Sink accumulates across iterations (never cleared inside the hot body) so
+        // the retained per-pixel allocations read bytes > 0.
+        const brokenHot = () => {
+            if (BREAK_BAKER) bakeAllocating(bakeInst, small, 8, 8, { combo: 'f1' }, sink);
+            else bakeComboParse(bakeInst, small, 8, 8, { combo: 'f2-f1' }, sink);
+        };
+        const { report } = runAllocGate(brokenHot, { iterations: 300, batches: 4, reps: 1 });
+        if (report.verdict !== 'fail') {
+            die('T6 bake break control: a ' + (BREAK_BAKER ? 'per-pixel-allocating' : 'per-pixel combo-parse') +
+                ' baker passed the zero-retention gate -- the bake gate is blind');
+        }
+        die('T6 bake break control tripped as designed -- exiting non-zero');
+    }
+
+    // Plain + tiling bake, each combo: whole-window (arrayBuffers) + zero-retention.
+    for (const tiling of [false, true]) {
+        for (const combo of combos) {
+            const opts = tiling
+                ? { combo, scale: 4 / BW, periodX: 4, periodY: 4 }
+                : { combo, scale: 0.03 };
+            const bytesBefore = dst.buffer.byteLength;
+            const hot = () => { bakeInst.fillCellField2(dst, BW, BH, opts); };
+
+            const { report, summary } = runOpsGate(hot, { ops: 3000, warmup: 200 });
+            assertHot(dst.buffer.byteLength === bytesBefore,
+                () => `T6 bake[${tiling ? 'tiling' : 'plain'}/${combo}]: dst.buffer.byteLength changed -- a hidden realloc`);
+            if (!report.ok) {
+                const g = summary.gc;
+                die('T6 bake[' + (tiling ? 'tiling' : 'plain') + '/' + combo + '] whole-window gate rejected -- ' +
+                    'verdict=' + report.verdict + ' major=' + g.major + ' minor=' + g.minor + ' maxMs=' + g.maxMs.toFixed(3));
+            }
+            const { report: aRep, result } = runAllocGate(hot, { iterations: 600, batches: 4, reps: 3 });
+            assertHot(aRep.verdict !== 'fail',
+                () => `T6 bake[${tiling ? 'tiling' : 'plain'}/${combo}] zero-retention gate rejected -- bytesPerCall=${result.bytesPerCall}`);
+        }
+    }
+
+    // tileableCell2 in a hot loop: same two lanes.
+    const prngT = makePrng(SEED ^ 0x4444);
+    const hotT = () => {
+        const x = (prngT() % 65536) / 64;
+        const y = (prngT() % 65536) / 64;
+        bakeInst.tileableCell2(x, y, 8, 8, OUT);
+    };
+    const { report: rT, summary: sT } = runOpsGate(hotT, { ops: OPS, warmup: WARMUP });
+    if (!rT.ok) {
+        const g = sT.gc;
+        die('T6[tileableCell2] whole-window gate rejected -- verdict=' + rT.verdict +
+            ' major=' + g.major + ' minor=' + g.minor + ' maxMs=' + g.maxMs.toFixed(3));
+    }
+    const prngT2 = makePrng(SEED ^ 0x5555);
+    const allocHotT = () => {
+        const x = (prngT2() % 65536) / 64;
+        const y = (prngT2() % 65536) / 64;
+        bakeInst.tileableCell2(x, y, 8, 8, OUT);
+    };
+    const { report: aT, result: resT } = runAllocGate(allocHotT, {});
+    assertHot(aT.verdict !== 'fail',
+        () => `T6[tileableCell2] zero-retention gate rejected -- bytesPerCall=${resT.bytesPerCall}`);
 }

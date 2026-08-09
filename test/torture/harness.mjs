@@ -56,6 +56,20 @@ export const SEED = (() => {
 export const BREAK = process.env.CELLULAR_TORTURE_BREAK === '1';
 
 /**
+ * C2 break controls (each makes the whole run exit non-zero, proving a gate bites):
+ *   - BREAK_BAKER     : T6 gates a baker that allocates a retained per-pixel
+ *                       out-struct -- the zero-retention gate must reject it (0005).
+ *   - BREAK_COMBOPARSE: T6 gates a baker that parses the combo STRING per pixel and
+ *                       retains the parse -- same gate must reject it (0005).
+ *   - BREAK_FLOATWRAP : T0 runs the exact-periodicity law against a kernel that wraps
+ *                       the FLOAT coord instead of the integer cell -- periodicity
+ *                       must break (the 0006 anti-pattern).
+ */
+export const BREAK_BAKER = process.env.CELLULAR_TORTURE_BREAK_BAKER === '1';
+export const BREAK_COMBOPARSE = process.env.CELLULAR_TORTURE_BREAK_COMBOPARSE === '1';
+export const BREAK_FLOATWRAP = process.env.CELLULAR_TORTURE_BREAK_FLOATWRAP === '1';
+
+/**
  * Whole-window zero-GC rules. maxArrayBuffersGrowth needs measureOps
  * `stabilize:'deep'` (ArrayBuffer backing stores live outside the V8 heap).
  */

@@ -24,11 +24,12 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, '../Cellular.js');
 
 /**
- * Committed byte ceiling for Cellular.js. Current size ~15.5 KB; the ceiling
- * leaves headroom for doc-comment upkeep but bites long before the file could
+ * Committed byte ceiling for Cellular.js. C2 raised it from 17408 to 33792 to seat
+ * the three tiling kernels + `fillCellField2` / `tileableCell2` and their doc
+ * comments (current size ~31 KB); the ceiling still bites long before the file could
  * quietly grow a second concern. Raising it is a deliberate act + a CHANGELOG note.
  */
-const CELLULAR_BYTE_CEILING = 17408;
+const CELLULAR_BYTE_CEILING = 33792;
 
 test('bundle: Cellular.js externalises nothing (zero import/require of a dependency)', () => {
     const src = readFileSync(SRC, 'utf8');

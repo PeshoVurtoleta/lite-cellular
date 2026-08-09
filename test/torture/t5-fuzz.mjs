@@ -21,7 +21,10 @@
  * @license MIT
  */
 
-import { createCellular, cellular2, seedCellular, METRIC_EUCLIDEAN } from '../../Cellular.js';
+import {
+    createCellular, cellular2, seedCellular,
+    METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV,
+} from '../../Cellular.js';
 import { makePrng, SEED, assertHot, die } from './harness.mjs';
 
 /** Env break: run the shared-seed control and exit non-zero (the isolation gate). */
@@ -172,6 +175,50 @@ export function run() {
     assertHot(eq(gotA, refA), () => `T5.interleave: instance A stream diverged when interleaved (seed=${SEED})`);
     assertHot(eq(gotB, refB), () => `T5.interleave: instance B stream diverged when interleaved (seed=${SEED})`);
     assertHot(eq(gotM, refM), () => `T5.interleave: module stream diverged when interleaved (seed=${SEED})`);
+
+    // --- C2: bake determinism + isolation (0005/0006 fold into NS-01) ---------
+    const BW = 24, BH = 20, BN = BW * BH;
+
+    // (5) Two instances baking the SAME field do not cross-contaminate. Bake with a,
+    // then bake+reseed b, then re-bake a: bit-identical to the first bake.
+    {
+        const a = createCellular(SEED_A, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const b = createCellular(SEED_B, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const fa0 = new Float64Array(BN), fb = new Float64Array(BN), fa1 = new Float64Array(BN);
+        a.fillCellField2(fa0, BW, BH, { combo: 'f2-f1', scale: 0.04 });
+        b.fillCellField2(fb, BW, BH, { combo: 'f1', scale: 0.04 });
+        b.reseed(SEED_C);
+        b.fillCellField2(fb, BW, BH, { combo: 'f2', scale: 0.04 });
+        a.fillCellField2(fa1, BW, BH, { combo: 'f2-f1', scale: 0.04 });
+        assertHot(eq(fa0, fa1),
+            () => `T5.bake-iso: instance a's bake changed after activity on instance b (seed=${SEED})`);
+    }
+
+    // (6) A bake is reproducible under reseed: bake; reseed away; reseed back; bake
+    // again -> identical.
+    {
+        const c = createCellular(SEED_A, { metric: METRIC_MANHATTAN, jitter: 1 });
+        const first = new Float64Array(BN), again = new Float64Array(BN);
+        c.fillCellField2(first, BW, BH, { combo: 'f1', scale: 0.05, ox: 1.5, oy: -2.5 });
+        c.reseed(SEED_B);
+        c.fillCellField2(again, BW, BH, { combo: 'f1', scale: 0.05 });
+        c.reseed(SEED_A);
+        c.fillCellField2(again, BW, BH, { combo: 'f1', scale: 0.05, ox: 1.5, oy: -2.5 });
+        assertHot(eq(first, again),
+            () => `T5.bake-reseed: a bake was not reproducible after reseed(B) then reseed(A) (seed=${SEED})`);
+    }
+
+    // (7) A tiling bake is independent of the module seed: seedCellular(...) between
+    // two identical tiling bakes must not move a single pixel.
+    {
+        const t = createCellular(SEED_C, { metric: METRIC_CHEBYSHEV, jitter: 1 });
+        const before = new Float64Array(BN), after = new Float64Array(BN);
+        t.fillCellField2(before, BW, BH, { combo: 'f2-f1', scale: 4 / BW, periodX: 4, periodY: 4 });
+        for (const sv of [11, 22, 33, 999]) seedCellular(sv);
+        t.fillCellField2(after, BW, BH, { combo: 'f2-f1', scale: 4 / BW, periodX: 4, periodY: 4 });
+        assertHot(eq(before, after),
+            () => `T5.bake-module-iso: seedCellular perturbed a tiling bake (seed=${SEED})`);
+    }
 }
 
 function streamAlone(sample) {

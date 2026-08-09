@@ -14,7 +14,7 @@
 [![types](https://img.shields.io/badge/types-included-blue.svg)](./Cellular.d.ts)
 [![node](https://img.shields.io/badge/node-%3E%3D18-339933.svg)](./package.json)
 [![single file](https://img.shields.io/badge/source-single%20file-informational.svg)](./Cellular.js)
-[![status](https://img.shields.io/badge/status-v0.1.0%20scaffold-orange.svg)](./CHANGELOG.md)
+[![status](https://img.shields.io/badge/status-v1.1.0-brightgreen.svg)](./CHANGELOG.md)
 [![tests](https://img.shields.io/badge/torture-node%20--expose--gc-success.svg)](#testing)
 
 ## The cellular half the noise ecosystem was missing
@@ -78,6 +78,10 @@ construction so the loop stays monomorphic and branch-free.
   euclidean (L2), manhattan (L1), chebyshev (Linf). All report LINEAR units.
 - **`{ f1, f2, id }` per query** -- the two nearest distances and the F1 owner's
   stable per-region tag. Combinations (`f2 - f1`, `f1 * f2`, ...) are the caller's.
+- **A zero-alloc field baker** -- `fillCellField2(dst, w, h, opts?)` writes a whole
+  `w*h` texture into a typed array you own (`combo` resolved once; opt-in normalize),
+  and **`tileableCell2`** gives an EXACTLY-seamless tile (integer-cell wrap, not
+  epsilon) -- proven near-zero by `@zakkster/lite-patternforge` `seamlessScore`.
 - **Zero allocation on the query path** -- proven, not asserted: the torture gate
   measures `maxBytesPerCall: 0` retained bytes and `maxArrayBuffersGrowth: 0`.
 - **Instance isolation (NS-01)** -- two instances never cross-contaminate; a module
@@ -127,8 +131,25 @@ class Cellular {
   // Sample at (x, y). Writes into `out` (and returns it) or the reused instance
   // struct. Zero allocation. Throws on non-finite x or y.
   cellular2(x: number, y: number, out?: CellularResult): CellularResult;
+  // Exactly-tileable sample: cellular2 with the integer cell coords wrapped mod an
+  // integer period. periodX/periodY are required positive integers (else throw).
+  // Seamless by construction. Zero allocation. See decisions/0006.
+  tileableCell2(x: number, y: number, periodX: number, periodY: number, out?: CellularResult): CellularResult;
+  // Bake a w*h field into a caller-owned typed array (length >= w*h), row-major,
+  // allocation-free; returns dst. combo resolved once; optional normalize; set
+  // periodX/periodY for a seamless tile. Fail closed on bad dst/w/h/combo. See 0005.
+  fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: FillCellFieldOptions): T;
   // Re-seed in place. Setup only. Returns this.
   reseed(seed: number): this;
+}
+
+interface FillCellFieldOptions {
+  scale?: number;                               // coord step per pixel (px += scale); default 0.01
+  combo?: 'f1' | 'f2-f1' | 'cracks' | 'f2';     // which texture; default 'f1'; unknown throws
+  jitter?: number;                              // override instance jitter for this bake
+  ox?: number; oy?: number;                     // world-space origin; default 0
+  normalize?: boolean;                          // opt-in in-place remap to [0,1]; default false
+  periodX?: number; periodY?: number;           // set BOTH (positive ints) for a seamless tile
 }
 
 // Module free surface: euclidean, jitter 1, shared module seed. Zero-config.
@@ -141,7 +162,7 @@ function seedCellular(seed?: number): void;
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `VERSION` | `'1.0.0'` | In lockstep with `package.json` + `llms.txt` (three-place sync). |
+| `VERSION` | `'1.1.0'` | In lockstep with `package.json` + `llms.txt` (three-place sync). |
 | `METRIC_EUCLIDEAN` | `0` | L2, `sqrt(dx*dx + dy*dy)`. The default. |
 | `METRIC_MANHATTAN` | `1` | L1, `|dx| + |dy|`. Diamond cells. |
 | `METRIC_CHEBYSHEV` | `2` | Linf, `max(|dx|, |dy|)`. Square cells. |
@@ -174,34 +195,87 @@ metrics may report different `id`.
 
 ## Composability
 
-Cellular composes with `@zakkster/lite-noise` at the app layer -- warp a cellular
-field with gradient noise, or multiply a crack mask into an fbm. The combination is
-always the caller's arithmetic, in the caller's loop, on caller-owned scratch:
+The field baker is where cellular meets the rest of the `@zakkster` ecosystem: it
+writes a whole texture into a buffer you own, and every downstream step (colour,
+displacement, tiling) is a pure per-pixel function of that buffer. Three recipes,
+each a runnable, CI-asserted file in [`examples/`](./examples):
+
+**1. Weathered stone -- cellular cracks x lite-noise fbm** ([`examples/weathered-stone.mjs`](./examples/weathered-stone.mjs)).
+Bake the Voronoi wall field (`combo: 'f2-f1'`, normalized: ~0 on the mortar lines)
+and multiply it into a `@zakkster/lite-noise` fbm heightfield -- the cracks darken
+the height where they run:
 
 ```js
 import { createCellular } from '@zakkster/lite-cellular';
 import { createNoise } from '@zakkster/lite-noise';
 
-const cell = createCellular(1337);          // euclidean, jitter 1
-const warp = createNoise(99);
-const out = { f1: 0, f2: 0, id: 0 };
+const w = 128, h = 128;
+const cracks = new Float64Array(w * h);     // ~0 on Voronoi walls
+const fbm = new Float64Array(w * h);
+const stone = new Float64Array(w * h);
 
-function stoneMask(x, y) {
-  // Domain-warp the sample point with gradient noise, then read cracks.
-  const wx = x + 0.4 * warp.simplex2(x * 0.3, y * 0.3);
-  const wy = y + 0.4 * warp.simplex2(x * 0.3 + 5.2, y * 0.3 + 1.7);
-  cell.cellular2(wx, wy, out);
-  const cracks = out.f2 - out.f1;           // Voronoi edges
-  return cracks < 0.05 ? 0 : 1;             // thin dark mortar between stones
-}
+createCellular(1337).fillCellField2(cracks, w, h, { combo: 'f2-f1', scale: 0.05, normalize: true });
+createNoise(99).fillField2(fbm, w, h, { scale: 0.03, octaves: 5, normalize: true });
+for (let i = 0; i < stone.length; i++) stone[i] = fbm[i] * cracks[i]; // zero-alloc combine
 ```
 
-For the zero-config case, the module free functions share one seed:
+**2. F1 through a gradient LUT** ([`examples/f1-through-gradient-lut.mjs`](./examples/f1-through-gradient-lut.mjs)).
+Bake `combo: 'f1'`, find ONE global lo/span, then map every pixel through a
+`@zakkster/lite-gradient-studio` LUT (`bakeGradientToLut` once, `sampleLut` per pixel)
+into a packed RGBA-LE `Uint32Array` -- ImageData-ready, zero allocation in the paint
+loop:
+
+```js
+import { createCellular } from '@zakkster/lite-cellular';
+import { bakeGradientToLut, sampleLut, gradientOcean } from '@zakkster/lite-gradient-studio';
+
+const w = 128, h = 128;
+const field = new Float64Array(w * h);
+createCellular(42).fillCellField2(field, w, h, { combo: 'f1', scale: 0.05 });
+
+let lo = Infinity, hi = -Infinity;
+for (let i = 0; i < field.length; i++) { const v = field[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+const span = (hi - lo) || 1;
+const lut = bakeGradientToLut(gradientOcean, 256);
+const texture = new Uint32Array(w * h);
+for (let i = 0; i < field.length; i++) texture[i] = sampleLut(lut, (field[i] - lo) / span) >>> 0;
+```
+
+**3. A seamless tile, proven** ([`examples/seamless-tile.mjs`](./examples/seamless-tile.mjs)).
+A tiling bake (`periodX`/`periodY` set, `scale = period / w`) scored by
+`@zakkster/lite-patternforge` `seamlessScore` -- see the tileability note below.
+
+For the zero-config per-query case, the module free functions share one seed:
 
 ```js
 import { cellular2, seedCellular } from '@zakkster/lite-cellular';
 seedCellular(42);
 const c = cellular2(3.5, 7.25);             // euclidean, jitter 1, shared seed
+```
+
+### Tileability -- exact, not epsilon
+
+`tileableCell2(x, y, periodX, periodY)` and a tiling `fillCellField2` wrap the
+**integer cell coordinate** modulo an **integer period**. Because the reduction is
+integer modulo -- no float period, no grid-alignment precondition -- the wrapped cells
+are the *same cells* with the *same feature points*, so the tile is seamless **by
+construction**: the seam step equals a normal interior step, and `tileableCell2(x,.)`
+is bit-identically periodic with `tileableCell2(x + periodX, .)` on representable
+coordinates (the `id` region tag is periodic on any coordinate). Contrast a gradient
+lattice tile, which wraps only to float epsilon and carries a small seam-contrast
+floor.
+
+The claim is tested, not asserted. A 256x256 period-4 cellular tile, coloured through
+`gradientOcean` and scored with `@zakkster/lite-patternforge` `seamlessScore`, reads
+**~0.012 overall** (imperceptible, `< 0.02`) -- materially below a `@zakkster/lite-noise`
+`tileableField2` fbm tile scored the same way (**~0.024**). For a seamless bake, set
+`periodX`/`periodY` and `scale = periodX / w` so the `w` columns span exactly the tile:
+
+```js
+import { createCellular } from '@zakkster/lite-cellular';
+const W = 256, P = 4;
+const tile = new Float64Array(W * W);
+createCellular(42).fillCellField2(tile, W, W, { combo: 'f1', scale: P / W, periodX: P, periodY: P });
 ```
 
 <details>
@@ -214,7 +288,14 @@ Every owned allocation of a `Cellular` instance:
 | the instance object + its scalars | `createCellular` | no |
 | one reused out-struct `{ f1, f2, id }` | `createCellular` | no (reused) |
 | (no permutation table) | -- | cellular scatters on demand |
-| the query itself | `cellular2` | **0 bytes** |
+| the query itself | `cellular2` / `tileableCell2` | **0 bytes** |
+| a whole `w*h` field bake | `fillCellField2` | **0 bytes** (writes caller-owned `dst`) |
+
+`fillCellField2` is the case the `maxArrayBuffersGrowth: 0` gate exists for: `dst` is
+an ArrayBuffer-backed store the V8-heap gate is blind to, so torture T6 also asserts
+`dst.buffer.byteLength` is unchanged across the window. The bake resolves `combo` to a
+small int once, binds the metric once, and scans into one reused scratch struct -- no
+per-pixel object, no per-pixel string parse.
 
 `cellular2` reads locals only (state is passed as arguments, never `this.*` in the
 loop), keeps `f1`/`f2`/`id` in registers, and writes three fields into the struct
@@ -241,28 +322,37 @@ variance -- the alloc gate is the contract, not this):
 
 | probe | Mops/s | bytesPerCall |
 | --- | --- | --- |
-| `cellular2` euclidean | ~14.7 | 0 |
-| `cellular2` manhattan | ~9.5 | 0 |
-| `cellular2` chebyshev | ~8.5 | 0 |
-| module `cellular2` | ~14.7 | 0 |
+| `cellular2` euclidean | ~13.6 | 0 |
+| `cellular2` manhattan | ~8.2 | 0 |
+| `cellular2` chebyshev | ~8.4 | 0 |
+| module `cellular2` | ~13.9 | 0 |
+| `tileableCell2` euclidean | ~10.8 | 0 |
+| `fillCellField2` 64x64 (plain) | ~11 K fields/s (~45 Mpx/s) | 0 |
+| `fillCellField2` 64x64 (tiling) | ~6 K fields/s (~24 Mpx/s) | 0 |
 
 </details>
 
 ## Design decisions worth knowing
 
-The four decisions this release implements are committed in `decisions/`:
+The decisions this package implements are committed in `decisions/`:
 
 - **[0001](decisions/0001-metric-selection.md)** -- the metric is an integer id
   bound to one inlined kernel per metric; the loop is monomorphic and branch-free.
   Euclidean returns true distance, not squared, for unit coherence.
 - **[0002](decisions/0002-combination-is-callers.md)** -- the kernel returns exactly
   `{ f1, f2, id }`; combinations (`f2 - f1`, ...) are the caller's one op, never a
-  per-query `combo` parameter.
+  per-query `combo` parameter (`combo` lives only in the bake, 0005).
 - **[0003](decisions/0003-jitter-and-hash.md)** -- `jitter` in `[0, 1]` is the 3x3
   scan's correctness contract; the hash is an allocation-free integer mix of the
   cell coords + seed, with two decorrelated draws (measured uniform, `corr ~ 0`).
 - **[0004](decisions/0004-cell-id.md)** -- `id` is the F1 owner's hash coerced with
   `| 0` (SMI-safe), opaque, stable per region, metric-dependent owner.
+- **[0005](decisions/0005-field-baker-ownership.md)** -- `fillCellField2` owns
+  nothing (caller-owned `dst`, written in place); `combo` is resolved to a small-int
+  selector ONCE before the loop; `normalize` is an allocation-free opt-in.
+- **[0006](decisions/0006-tileability.md)** -- `tileableCell2` wraps the integer cell
+  mod an integer period, for an EXACT (`===`) seam, not epsilon; three tiling kernels
+  bound as `this._tileKernel`, so the plain path pays nothing.
 
 ## Testing
 
@@ -272,22 +362,27 @@ npm run torture   # node --expose-gc test/torture.mjs   -> prints exactly "ok"
 npm run verify    # both
 ```
 
-50 `node:test` assertions across `Cellular.test.js`, `boundary.test.js`, and
-`bundle.test.js`, plus a 7-tier torture gate:
+85 `node:test` assertions across `Cellular.test.js` (incl. the Field bake / Combo /
+Normalize / Tileable / Seam groups), `boundary.test.js`, `boundary-c1.test.js`,
+`bundle.test.js`, and `examples.test.js` (the three composability recipes), plus an
+8-tier torture gate:
 
 | Tier | What it proves |
 | --- | --- |
-| T0 | metamorphic laws: determinism, `f1 <= f2`, metric-sanity ordering (f1 AND f2), per-metric jitter=0 grid distance, id-within-cell, three goldens (euclidean `33a16e9e` unchanged) |
+| T0 | metamorphic laws (determinism, `f1 <= f2`, metric-sanity, jitter=0 grid, id-within-cell, three goldens) + exact tile periodicity, bake==per-query, combo algebra |
 | T1 | degenerate values across three metrics (0/-0, non-finite throws, subnormal, f32-max, 2^24 boundary) |
-| T3 | world-scale precision walk per metric, with a PINNED limit (precise to 1e12; degenerates at 2^52) |
-| T5 | NS-01 isolation: instance-vs-instance, module-vs-instance, reseed reproducibility, interleaved cross-contamination fuzz |
-| T6 | the zero-alloc gate: `maxBytesPerCall: 0` + `maxArrayBuffersGrowth: 0` for three metrics + the module surface |
+| T3 | world-scale precision walk per metric (pinned limit) + bake/tile parameter extremes (1x1 & large bakes, period 1 & huge, world-scale ox/oy, unknown combo throws) |
+| T5 | NS-01 isolation (instance/module, reseed, interleave) + bake determinism & two-instance / module isolation |
+| T6 | the zero-alloc gate: `maxBytesPerCall: 0` + `maxArrayBuffersGrowth: 0` for three metrics, the module surface, the field bake (plain + tiling, each combo, `dst.buffer.byteLength` asserted), and `tileableCell2` |
 | T7 | dropped instances of every metric are collectable (lite-leak) |
+| T8 | the seamlessScore proof: a cellular tile near-zero and below a gradient tile |
 | T9 | controls -- every gate proven able to fail |
 
-Two break controls exit non-zero on purpose: `CELLULAR_TORTURE_BREAK=1` (injects a
-retained allocation into T6) and `CELLULAR_TORTURE_SHARED_SEED=1` (runs a
-shared-seed build through T5's isolation law).
+Five break controls exit non-zero on purpose: `CELLULAR_TORTURE_BREAK=1` (retained
+allocation into T6), `CELLULAR_TORTURE_SHARED_SEED=1` (shared-seed build through T5),
+`CELLULAR_TORTURE_BREAK_BAKER=1` (per-pixel out-struct baker), `CELLULAR_TORTURE_BREAK_COMBOPARSE=1`
+(per-pixel combo string parse), and `CELLULAR_TORTURE_BREAK_FLOATWRAP=1` (a
+raw-cell-hash tiling kernel that is not exactly periodic).
 
 ## What this is not
 
@@ -297,8 +392,9 @@ shared-seed build through T5's isolation law).
 - **Not a flow-field source.** `f1` has derivative discontinuities at cell
   boundaries by construction; it cannot feed an analytic curl/flow field.
 - **Not cryptographic.** The hash is for reproducible scatter, not security.
-- **Not 3D or a field baker (yet).** `cellular3`, `fillCellField2`, and the exact
-  tileable wrap land in v1.1.0 (C2) and v1.2.0 (C3). No `combo`/`mode` per query.
+- **Not 3D (yet).** `cellular3` / `fillCellField3` -- the 27-cell scan -- land in
+  v1.2.0 (C3). The 2D field baker (`fillCellField2`) and the exact tileable wrap
+  (`tileableCell2`) shipped in v1.1.0. `combo` lives ONLY in the bake, never per query.
 - **Not precise past ~2^52.** Beyond the float64 integer limit the 3x3
   neighbourhood degenerates (the pinned v1.0.0 world-scale limit).
 

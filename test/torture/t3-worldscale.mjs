@@ -82,4 +82,76 @@ export function run() {
         assertHot(Number.isFinite(a.f1) && a.f1 === a.f2,
             () => `T3[${name}].degenerate: expected f1==f2 at 2^52 (f1=${a.f1} f2=${a.f2}) -- pinned boundary moved`);
     }
+
+    // --- C2: bake + tile parameter extremes (each case decided, none silent) ---
+    const inst = createCellular(42, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+
+    // 1x1 bake: writes exactly one value; equals the per-query at the origin coord.
+    {
+        const one = new Float64Array(1);
+        inst.fillCellField2(one, 1, 1, { combo: 'f1', ox: 3.5, oy: 7.5 });
+        inst.cellular2(3.5, 7.5, a);
+        assertHot(one[0] === a.f1, () => `T3.bake-1x1: single pixel != per-query f1 (${one[0]} vs ${a.f1})`);
+    }
+
+    // Large-ish bake: finite everywhere, no throw, dst buffer intact.
+    {
+        const LW = 128, LH = 96;
+        const big = new Float64Array(LW * LH);
+        const before = big.buffer.byteLength;
+        inst.fillCellField2(big, LW, LH, { combo: 'f2-f1', scale: 0.02, normalize: true });
+        let allFinite = true;
+        for (let i = 0; i < big.length; i++) if (!Number.isFinite(big[i]) || big[i] < 0 || big[i] > 1) { allFinite = false; break; }
+        assertHot(allFinite, () => `T3.bake-large: a normalized pixel left [0,1] or went non-finite`);
+        assertHot(big.buffer.byteLength === before, () => `T3.bake-large: dst buffer reallocated`);
+    }
+
+    // Periods at 1 (a single-cell tile) and huge: both finite, no throw.
+    {
+        inst.tileableCell2(0.3, 0.7, 1, 1, a);
+        assertHot(Number.isFinite(a.f1) && Number.isFinite(a.f2) && a.f1 <= a.f2,
+            () => `T3.tile-period1: non-finite or f1>f2 at period 1x1`);
+        inst.tileableCell2(12345.5, -6789.5, 1 << 20, 1 << 20, a);
+        assertHot(Number.isFinite(a.f1) && Number.isFinite(a.f2) && a.f1 <= a.f2,
+            () => `T3.tile-huge: non-finite or f1>f2 at a huge period`);
+    }
+
+    // World-scale ox/oy: the bake's origin walk hits the same precision limit as the
+    // per-query path -- finite, decided, not silent.
+    {
+        const scan = new Float64Array(4);
+        inst.fillCellField2(scan, 4, 1, { combo: 'f1', scale: 1, ox: 1e9, oy: 1e9 });
+        let ok = true;
+        for (let i = 0; i < 4; i++) if (!Number.isFinite(scan[i]) || scan[i] < 0) ok = false;
+        assertHot(ok, () => `T3.bake-worldscale: a pixel at ox=1e9 went non-finite or negative`);
+    }
+
+    // combo at each valid value: no throw; and an unknown combo THROWS (fail closed).
+    {
+        const px = new Float64Array(4);
+        for (const combo of ['f1', 'f2-f1', 'cracks', 'f2']) {
+            let threw = false;
+            try { inst.fillCellField2(px, 4, 1, { combo }); } catch (e) { threw = true; }
+            assertHot(!threw, () => `T3.bake-combo: valid combo '${combo}' threw`);
+        }
+        let threwUnknown = false;
+        try { inst.fillCellField2(px, 4, 1, { combo: 'f3' }); } catch (e) { threwUnknown = /unknown combo/.test(e.message); }
+        assertHot(threwUnknown, () => `T3.bake-combo: an unknown combo 'f3' did not throw`);
+    }
+
+    // Fail-closed period + dst + dim guards on the bake and the query.
+    {
+        const px = new Float64Array(4);
+        let n = 0;
+        for (const [P, Q] of [[0, 4], [4, 0], [-1, 4], [4, 1.5], [NaN, 4], [4, Infinity]]) {
+            try { inst.tileableCell2(0.5, 0.5, P, Q, a); } catch (e) { n++; }
+        }
+        assertHot(n === 6, () => `T3.tile-guard: only ${n}/6 bad periods threw`);
+        let dtErr = 0;
+        try { inst.fillCellField2([0, 0, 0, 0], 4, 1, {}); } catch (e) { dtErr++; }        // not a typed array
+        try { inst.fillCellField2(new Float64Array(2), 4, 1, {}); } catch (e) { dtErr++; } // too small
+        try { inst.fillCellField2(px, 0, 1, {}); } catch (e) { dtErr++; }                   // non-positive w
+        try { inst.fillCellField2(px, 2.5, 1, {}); } catch (e) { dtErr++; }                 // non-integer w
+        assertHot(dtErr === 4, () => `T3.bake-guard: only ${dtErr}/4 bad dst/dim throws fired`);
+    }
 }

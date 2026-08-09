@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-cellular v1.0.0 -- the honest core.
+ * @zakkster/lite-cellular v1.1.0 -- the texture surface.
  *
  * Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two
  * nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written
@@ -8,8 +8,18 @@
  * v1.0.0 (C1) opens the three distance metrics (euclidean/manhattan/chebyshev),
  * fixed at instance creation via an integer id, and adds the module free-function
  * surface (`cellular2`, `seedCellular`) modelled line-for-line on lite-noise's
- * shared `_perm` + `seedNoise` dev-warn-once. The field baker and the exact
- * tileable wrap land in C2; `cellular3` in C3.
+ * shared `_perm` + `seedNoise` dev-warn-once.
+ *
+ * v1.1.0 (C2) adds the money surface -- two INSTANCE methods, both zero-alloc:
+ *   - `fillCellField2(dst, w, h, opts?)` bakes a whole `w*h` field into a
+ *     caller-owned typed array, with `combo` (f1 / f2-f1 / f2) resolved ONCE
+ *     before the loop and an optional in-place normalize (decisions/0005).
+ *   - `tileableCell2(x, y, periodX, periodY, out?)` is `cellular2` with the integer
+ *     CELL coords wrapped mod an integer period, so the field is EXACTLY periodic
+ *     (`===`, not epsilon) and seamless by construction (decisions/0006).
+ * The plain `cellular2` path is byte-for-byte unchanged from C1 -- the tiling wrap
+ * lives in three SEPARATE kernels, so the per-query hot loop pays nothing for it.
+ * `cellular3` / `fillCellField3` land in C3.
  *
  * The metric is NOT threaded into the hot loop. There are three metric-specific
  * kernels, each with its distance expression inlined and the metric param DROPPED;
@@ -41,7 +51,7 @@
  * @license MIT
  */
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 
 // The metric id space (0001). C0 opened id 0; C1 opens 1 and 2. The guard widens
 // the accepted set (0/1/2) -- it never loosens: any other value still throws.
@@ -200,6 +210,120 @@ function _cellular2Chebyshev(seed, jitter, x, y, out) {
     return out;
 }
 
+// --- the tiling wrap (0006) -------------------------------------------------
+// Positive integer modulo: reduce a signed cell coordinate into [0, P) so cells
+// near (and left of) the origin wrap correctly. `_hash2`/`_hash2b` already key on
+// integer cell coords, so a reduced coord is still an EXACT integer -- the hash of
+// cell `P` equals the hash of cell `0` bit-for-bit, which is what makes the tile
+// seamless with `===`, not with float epsilon (0006 Decision 2).
+function _wrap(c, P) { return ((c % P) + P) % P; }
+
+// The three TILING kernels mirror the three plain kernels above with ONE semantic
+// change: the two hash inputs per neighbour are reduced mod the period via `_wrap`
+// (0006 Decision 1/4). One numeric refinement makes the exact-`===` periodicity of
+// 0006 Decision 2 REAL rather than epsilon: the distance is computed in the query
+// cell's LOCAL frame. `rx = x - floor(x)` is the fractional position inside the home
+// cell; the feature point's offset from the home cell is `gx + 0.5 + jitter*(u-0.5)`
+// (a small value, ~[-1.5, 1.5], independent of the absolute cell index). At `x` and
+// `x + periodX` the wrapped hash is identical (so `u`, `v`, `gx`, `gy` match) and, on
+// a representable coordinate, `rx` is bit-identical -- so every `dx`/`dy`, the metric,
+// and `id` are bit-for-bit equal. The plain kernels keep their absolute-frame
+// `fx - x` (the golden anchor); the tiling kernels take the local frame because the
+// absolute frame loses the low bits at the shifted magnitude and would only wrap to
+// float epsilon (exactly the anti-pattern 0006 rejects). Distance line, jitter, and
+// id are otherwise unchanged. Kept as three separate functions (not one parameterised
+// loop) for the monomorphism reason 0001 keeps three.
+
+/** EUCLIDEAN tiling kernel: euclid in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell2Euclid(seed, jitter, periodX, periodY, x, y, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error(
+            'lite-cellular: tileableCell2 requires finite x and y (got ' + x + ', ' + y + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const rx = x - ix, ry = y - iy;   // fractional home-cell position; bit-stable under +period
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gy = -1; gy <= 1; gy++) {
+        for (let gx = -1; gx <= 1; gx++) {
+            const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY);   // wrap the INTEGER cell (0006)
+            const h = _hash2(wx, wy, seed);
+            const u = h / _UINT32;
+            const v = _hash2b(wx, wy, seed) / _UINT32;
+            const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;   // local frame: small, magnitude-stable
+            const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+            const d = dx * dx + dy * dy;
+            if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+            else if (d < f2) { f2 = d; }
+        }
+    }
+    out.f1 = Math.sqrt(f1);
+    out.f2 = Math.sqrt(f2);
+    out.id = id;
+    return out;
+}
+
+/** MANHATTAN tiling kernel: L1 in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell2Manhattan(seed, jitter, periodX, periodY, x, y, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error(
+            'lite-cellular: tileableCell2 requires finite x and y (got ' + x + ', ' + y + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const rx = x - ix, ry = y - iy;
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gy = -1; gy <= 1; gy++) {
+        for (let gx = -1; gx <= 1; gx++) {
+            const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY);
+            const h = _hash2(wx, wy, seed);
+            const u = h / _UINT32;
+            const v = _hash2b(wx, wy, seed) / _UINT32;
+            const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;
+            const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+            const d = Math.abs(dx) + Math.abs(dy);
+            if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+            else if (d < f2) { f2 = d; }
+        }
+    }
+    out.f1 = f1;
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
+/** CHEBYSHEV tiling kernel: Linf in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell2Chebyshev(seed, jitter, periodX, periodY, x, y, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new Error(
+            'lite-cellular: tileableCell2 requires finite x and y (got ' + x + ', ' + y + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const rx = x - ix, ry = y - iy;
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gy = -1; gy <= 1; gy++) {
+        for (let gx = -1; gx <= 1; gx++) {
+            const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY);
+            const h = _hash2(wx, wy, seed);
+            const u = h / _UINT32;
+            const v = _hash2b(wx, wy, seed) / _UINT32;
+            const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;
+            const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+            const d = Math.max(Math.abs(dx), Math.abs(dy));
+            if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+            else if (d < f2) { f2 = d; }
+        }
+    }
+    out.f1 = f1;
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
+// `combo` string -> small-int selector, decoded ONCE before the bake loop (0005
+// Decision 2), mirroring lite-noise's `_TF2_MODELS`. The pixel loop branches on the
+// small int, NEVER re-parses the string. `undefined` for an unknown key is the
+// fail-closed signal.
+const _COMBO = { 'f1': 0, 'f2-f1': 1, 'cracks': 1, 'f2': 2 };
+
 /**
  * A cellular (Worley) noise field owning one reused out-struct. Construct via
  * `createCellular(seed, opts)`. The metric and jitter are fixed at construction
@@ -234,6 +358,12 @@ export class Cellular {
         this._kernel = metric === METRIC_MANHATTAN ? _cellular2Manhattan
                      : metric === METRIC_CHEBYSHEV ? _cellular2Chebyshev
                      : _cellular2Euclid;
+        // Bind the matching TILING kernel once too (0006 Decision 4), so a tile
+        // query / bake pays one indirect call off the loop -- and the plain
+        // `cellular2` path above stays byte-for-byte C1 (no modulo, no branch).
+        this._tileKernel = metric === METRIC_MANHATTAN ? _tileableCell2Manhattan
+                         : metric === METRIC_CHEBYSHEV ? _tileableCell2Chebyshev
+                         : _tileableCell2Euclid;
         // The instance's only owned allocation: one reused out-struct (0003). No
         // permutation table -- cellular scatters one point per cell on demand.
         this._out = { f1: 0, f2: 0, id: 0 };
@@ -256,6 +386,171 @@ export class Cellular {
      */
     cellular2(x, y, out) {
         return this._kernel(this._seed, this._jitter, x, y, out || this._out);
+    }
+
+    /**
+     * Sample the EXACTLY-TILEABLE field at (x, y) with a tile of `periodX` x
+     * `periodY` CELLS. Identical to `cellular2` except each neighbour's integer
+     * cell coordinate is reduced modulo the period before hashing, so the field is
+     * bit-identically periodic (`f1`/`f2`/`id` at `x` and `x + periodX` are `===`,
+     * not merely close) and seamless by construction -- strictly better than a
+     * float-lattice tile's epsilon seam. See `decisions/0006`.
+     *
+     * `periodX`/`periodY` are REQUIRED positive integers (a whole number of cells);
+     * `0`, negatives, non-integers, `NaN`, and `Infinity` throw (fail closed -- a
+     * tile with no size is meaningless; there is no default). Writes into `out` if
+     * given (and returns it), else the instance's reused out-struct. Zero allocation.
+     * Throws on non-finite `x` or `y`.
+     *
+     * @param {number} x
+     * @param {number} y
+     * @param {number} periodX  tile width in cells; positive integer.
+     * @param {number} periodY  tile height in cells; positive integer.
+     * @param {{ f1: number, f2: number, id: number }} [out]
+     * @returns {{ f1: number, f2: number, id: number }}
+     */
+    tileableCell2(x, y, periodX, periodY, out) {
+        if (!Number.isInteger(periodX) || periodX < 1 || !Number.isInteger(periodY) || periodY < 1) {
+            throw new Error(
+                'lite-cellular: tileableCell2 requires positive integer periodX and periodY (got ' +
+                String(periodX) + ', ' + String(periodY) + ')');
+        }
+        return this._tileKernel(this._seed, this._jitter, periodX, periodY, x, y, out || this._out);
+    }
+
+    /**
+     * Bake a whole `w` x `h` cellular field into a caller-owned typed array, row-
+     * major, allocation-free. The baker OWNS NOTHING: it validates `dst` and writes
+     * `w*h` values into it, returning `dst`. See `decisions/0005`.
+     *
+     * `opts` (all optional, guarded so the omitted-opts path allocates nothing --
+     * `opts?.k ?? default`, never `opts = {}`):
+     *   - `scale`   coord step per pixel (`px += scale`); default `0.01`.
+     *   - `combo`   which texture to store: `'f1'` (blobs), `'f2-f1'` (cracks, alias
+     *               `'cracks'`), or `'f2'` (soft cells); default `'f1'`. Decoded to a
+     *               small-int selector ONCE before the loop; unknown throws (0005).
+     *   - `jitter`  override the instance jitter for this bake; default the
+     *               instance's jitter.
+     *   - `ox`,`oy` world-space origin; default `0`.
+     *   - `normalize` opt-in in-place remap to `[0,1]` (two-pass min/max, no temp
+     *               buffer; a constant field maps to all-zero -- no divide-by-zero);
+     *               default `false` (the raw distance field is the honest primitive).
+     *   - `periodX`,`periodY` set BOTH (positive integers) to bake a seamless tile
+     *               (0006's wrap in this loop -- pick `scale = periodX / w`); omit
+     *               both for a plain field. A partial/invalid period throws.
+     *
+     * Fail closed: `w`/`h` must be positive integers and `dst` a typed array with
+     * `length >= w*h`, else throw (an undersized buffer is a caller error, never a
+     * silent short write). The metric is the instance's, bound once (0001) -- no
+     * per-pixel metric branch; combo is a small-int select on two locals -- no
+     * per-pixel string parse; the scan writes one reused scratch struct -- no
+     * per-pixel object. Zero allocation once options are read.
+     *
+     * @param {Float64Array | Float32Array} dst  caller-owned, length `>= w*h`.
+     * @param {number} w  positive integer width.
+     * @param {number} h  positive integer height.
+     * @param {{ scale?: number, combo?: string, jitter?: number, ox?: number,
+     *          oy?: number, normalize?: boolean, periodX?: number, periodY?: number }} [opts]
+     * @returns {Float64Array | Float32Array} `dst`.
+     */
+    fillCellField2(dst, w, h, opts) {
+        // Fail closed at SETUP, before dst is touched (0005 Decision 1).
+        if (!Number.isInteger(w) || w < 1 || !Number.isInteger(h) || h < 1) {
+            throw new Error(
+                'lite-cellular: fillCellField2 requires positive integer w and h (got ' +
+                String(w) + ', ' + String(h) + ')');
+        }
+        if (!ArrayBuffer.isView(dst) || typeof dst.BYTES_PER_ELEMENT !== 'number' ||
+            typeof dst.length !== 'number') {
+            throw new Error(
+                'lite-cellular: fillCellField2 requires a typed-array dst (Float64Array or Float32Array)');
+        }
+        const need = w * h;
+        if (dst.length < need) {
+            throw new Error(
+                'lite-cellular: fillCellField2 dst too small -- length ' + dst.length +
+                ' < w*h ' + need + ' (fail closed, no short write)');
+        }
+
+        // Guarded reads -- no `opts = {}` (0005). Zero-alloc whether opts is
+        // undefined, null, or an object.
+        const scale     = opts?.scale     ?? 0.01;
+        const combo     = opts?.combo     ?? 'f1';
+        const jitter    = opts?.jitter    ?? this._jitter;
+        const ox        = opts?.ox        ?? 0;
+        const oy        = opts?.oy        ?? 0;
+        const normalize = opts?.normalize ?? false;
+        const periodX   = opts?.periodX;
+        const periodY   = opts?.periodY;
+
+        // Decode combo ONCE (0005 Decision 2). The loop branches on `sel`, never the
+        // string.
+        const sel = _COMBO[combo];
+        if (sel === undefined) {
+            throw new RangeError(
+                "lite-cellular: fillCellField2 unknown combo '" + combo +
+                "' -- expected 'f1', 'f2-f1' (alias 'cracks'), or 'f2'");
+        }
+
+        // Select the kernel ONCE (0005 Decision 3 / 0006): tiling iff a period is
+        // given; both periods required + positive integer, else throw (fail closed).
+        const tiling = periodX !== undefined || periodY !== undefined;
+        if (tiling && (!Number.isInteger(periodX) || periodX < 1 ||
+                       !Number.isInteger(periodY) || periodY < 1)) {
+            throw new Error(
+                'lite-cellular: fillCellField2 tiling requires positive integer periodX and periodY (got ' +
+                String(periodX) + ', ' + String(periodY) + ')');
+        }
+
+        const seed = this._seed;
+        const s = this._out;   // one reused scratch out-struct -- never a per-pixel object
+        let idx = 0;
+
+        // Two monomorphic loop variants, chosen once. Neither branches on metric or
+        // combo-string per pixel; the only per-pixel work is one kernel call, one
+        // `sel` select on two locals, one `dst[idx++]` write.
+        if (tiling) {
+            const tk = this._tileKernel;
+            let py = oy;
+            for (let y = 0; y < h; y++) {
+                let px = ox;
+                for (let x = 0; x < w; x++) {
+                    tk(seed, jitter, periodX, periodY, px, py, s);
+                    dst[idx++] = sel === 0 ? s.f1 : sel === 1 ? s.f2 - s.f1 : s.f2;
+                    px += scale;
+                }
+                py += scale;
+            }
+        } else {
+            const k = this._kernel;
+            let py = oy;
+            for (let y = 0; y < h; y++) {
+                let px = ox;
+                for (let x = 0; x < w; x++) {
+                    k(seed, jitter, px, py, s);
+                    dst[idx++] = sel === 0 ? s.f1 : sel === 1 ? s.f2 - s.f1 : s.f2;
+                    px += scale;
+                }
+                py += scale;
+            }
+        }
+
+        // Optional exact-[0,1] remap: two in-place scalar-tracking passes, no temp
+        // buffer; a constant field (range 0) maps to all-zero, never a 0/0 divide
+        // (0005 Decision 4, identical to lite-noise `_fillField2`).
+        if (normalize) {
+            let mn = Infinity, mx = -Infinity;
+            for (let i = 0; i < need; i++) {
+                const v = dst[i];
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+            const range = mx - mn;
+            const inv = range > 0 ? 1 / range : 0;
+            for (let i = 0; i < need; i++) dst[i] = (dst[i] - mn) * inv;
+        }
+
+        return dst;
     }
 
     /**

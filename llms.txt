@@ -1,11 +1,14 @@
 # @zakkster/lite-cellular
 
-> Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; the field baker + exact tileable wrap land in v1.1.0. Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
+> Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; v1.1.0 adds the zero-alloc field baker `fillCellField2` and the EXACTLY-seamless `tileableCell2`. Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
 
 ## API
 
-Named exports (v1.0.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
-`VERSION`, `METRIC_EUCLIDEAN`, `METRIC_MANHATTAN`, `METRIC_CHEBYSHEV`.
+Named exports (v1.1.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
+`VERSION`, `METRIC_EUCLIDEAN`, `METRIC_MANHATTAN`, `METRIC_CHEBYSHEV`. The two C2
+methods (`fillCellField2`, `tileableCell2`) are INSTANCE methods -- a bake wants
+metric + jitter control, which is what an instance is for. No module-surface baker or
+tileable, by design.
 
 ```ts
 // Distance metric ids. 0 (euclidean, default), 1 (manhattan), 2 (chebyshev).
@@ -35,6 +38,31 @@ class Cellular {
     // instance's reused out-struct. THROWS on non-finite x or y. Zero allocation
     // either way. `f2 - f1` (cracks) is the caller's one subtraction.
     cellular2(x: number, y: number, out?: CellularResult): CellularResult;
+
+    // EXACTLY-tileable sample: cellular2 with each neighbour's INTEGER cell coord
+    // reduced mod the period, so the field is bit-identically periodic (f1/f2/id at
+    // x and x+periodX are ===, not merely close on representable coords) and seamless
+    // BY CONSTRUCTION -- strictly better than a float-lattice tile's epsilon seam.
+    // periodX/periodY are REQUIRED positive integers (0, negatives, non-integers,
+    // NaN, Infinity throw -- there is no default). Zero allocation. See decisions/0006.
+    tileableCell2(x: number, y: number, periodX: number, periodY: number, out?: CellularResult): CellularResult;
+
+    // Bake a w*h field into a caller-owned typed array (Float64Array/Float32Array,
+    // length >= w*h), row-major, allocation-free; returns dst. combo decoded to a
+    // small int ONCE before the loop (never a per-pixel string parse); metric bound
+    // once (no per-pixel branch); the scan writes one reused scratch struct (no
+    // per-pixel object). Fail closed: non-positive-integer w/h, an undersized or
+    // non-typed-array dst, and an unknown combo each throw. See decisions/0005.
+    //   opts (all optional, guarded so the omitted-opts path allocates nothing):
+    //     scale = 0.01            coord step per pixel (px += scale)
+    //     combo = 'f1'            'f1' | 'f2-f1' (alias 'cracks') | 'f2'; unknown throws
+    //     jitter = <instance>     override the instance jitter for this bake
+    //     ox, oy = 0              world-space origin
+    //     normalize = false       opt-in in-place remap to [0,1] (constant -> all-zero)
+    //     periodX, periodY        set BOTH (positive ints) for a seamless tile of that
+    //                             many cells (0006 wrap; pick scale = periodX / w);
+    //                             omit both for a plain field
+    fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: object): T;
 
     // Re-seed in place. Setup cost only -- not on any hot path. Returns this.
     reseed(seed: number): this;
@@ -72,6 +100,25 @@ which is what makes the fixed 3x3 neighbourhood scan guaranteed to contain the t
 Isolation (NS-01): two `createCellular` instances never cross-contaminate, and
 `seedCellular` never perturbs an instance -- an instance owns its seed, the module
 surface owns the shared one.
+
+## Field bake and tileability
+
+`fillCellField2(dst, w, h, opts)` is the money surface: a whole `w*h` field baked
+into a caller-owned typed array with ZERO allocation (`combo` resolved once, metric
+bound once, one reused scratch struct -- no per-pixel object, no per-pixel string
+parse). `combo` picks the texture: `'f1'` blobs, `'f2-f1'` cracks (alias `'cracks'`),
+`'f2'` soft cells. `normalize: true` remaps to `[0,1]` in place (a constant field maps
+to all-zero, never NaN).
+
+`tileableCell2` and a tiling bake wrap the INTEGER cell coordinate mod an integer
+period, so the tile is seamless BY CONSTRUCTION: because the reduction is integer
+modulo (no float period, no grid-alignment precondition), the wrapped cells are the
+SAME cells with the SAME feature points, and the seam step equals a normal interior
+step. `@zakkster/lite-patternforge` `seamlessScore` reads genuinely near-zero on a
+256x256 period-4 cellular tile (~0.012, imperceptible) -- materially below a
+`@zakkster/lite-noise` `tileableField2` gradient tile scored the same way (~0.024),
+whose lattice wrap carries a small seam-contrast floor. For a seamless bake set
+`periodX`/`periodY` and `scale = periodX / w` so the `w` columns span exactly the tile.
 
 ## Install
 
