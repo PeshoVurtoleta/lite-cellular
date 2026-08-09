@@ -1,7 +1,7 @@
 # 0001 -- Metric selection: integer id, one kernel per metric, branch-free loop (C1, v1.0.0)
 
-Status: accepted (design-locked ahead of C1), 2026-08-06.
-  Implementation and the measured table land with v1.0.0.
+Status: accepted, 2026-08-08. Implemented in v1.0.0 (C1); the Measured table below
+  is filled from the built kernel.
 Anchor: D-01 (ROADMAP.md section 2)
 Owner: C1
 Depends on: C0 (the euclidean kernel + torture skeleton this generalises)
@@ -128,32 +128,51 @@ finds it only in the constructor and the kernel binding, never in a loop body).
 The per-query indirect call to `this._kernel` is off the loop and is the only
 metric-related instruction on the query path.
 
-T0's metric-sanity law and T6's `maxArrayBuffersGrowth: 0` / `bytesPerOp: 0` gate
-enforce this; T9 ships a control that branches on the metric id inside the loop
-and must trip T6 (a metric branch in the hot body is a measurable regression, so
-the gate that forbids it must be shown able to fail).
+T0's metric-sanity law and T6's exact zero-alloc gate enforce this. The gate is
+`measureAllocs` `maxBytesPerCall: 0` (per-call RETAINED bytes -- the literal
+zero-alloc claim, best-of-5 to shed the rare sub-byte estimator fluke) plus
+`measureOps` `maxArrayBuffersGrowth: 0` / `maxMajor: 0`. Note: the design lock's
+`bytesPerOp: 0` shorthand is NOT a real profiler rule -- a `measureOps` allocation
+RATE has a documented V8 self-noise floor and can never read 0, so C1 uses
+`measureAllocs` (`maxBytesPerCall`), the exact tool. T9 ships a control that
+branches on a string metric per query and RETAINS the result, so its per-call
+allocation must trip the gate (a metric branch that leaks garbage into the hot
+body is a measurable regression, so the gate that forbids it must be shown able to
+fail).
 
 ## Measured
 
 Greenfield: there is no before. The **binding contract is the alloc gate**
-(`bytesPerOp: 0`, `maxArrayBuffersGrowth: 0`, `maxMajor: 0`) on all three kernels,
-not any ops/sec figure -- as in the blueprint's records, throughput on a shared
-box has ~2x run-to-run variance and is never the contract.
+(`maxBytesPerCall: 0` via `measureAllocs`, plus `maxArrayBuffersGrowth: 0` /
+`maxMajor: 0`) on all three kernels and the module surface, not any ops/sec figure
+-- as in the blueprint's records, throughput on a shared box has ~2x run-to-run
+variance and is never the contract.
 
-The indicative throughput table (best-of-5, `measureOps({ stabilize: 'deep' })`)
-is filled from the C1 implementation at v1.0.0 ship. It is left empty here rather
-than guessed:
+The indicative throughput table (best-of-5, `measureOps({ stabilize: 'deep' })`;
+`bytesPerCall` from `measureAllocs`, min-over-batches -- the exact gate), filled
+from the built v1.0.0 kernel on node v26.3.1 (see `bench/BASELINE.md`):
 
-| probe | ops/sec | bytesPerOp |
+| probe | Mops/s (indicative) | bytesPerCall (contract) |
 | --- | --- | --- |
-| `cellular2` euclidean (scattered coords) | (C1) | 0 |
-| `cellular2` manhattan | (C1) | 0 |
-| `cellular2` chebyshev | (C1) | 0 |
+| `cellular2` euclidean (scattered coords) | ~14.7 | 0 |
+| `cellular2` manhattan | ~9.5 | 0 |
+| `cellular2` chebyshev | ~8.5 | 0 |
 
-Expectation to confirm, not assume: manhattan and chebyshev are marginally faster
-than euclidean (no end-sqrt), and all three are within noise of each other since
-the loop scaffold dominates. If euclidean is not within a small constant of the
-other two, the two end-sqrts are not the reason -- investigate the loop.
+Expectation to confirm, not assume (from the design lock): manhattan and chebyshev
+would be marginally faster than euclidean (no end-sqrt). If euclidean is not within
+a small constant of the other two, the two end-sqrts are not the reason --
+investigate the loop.
+
+**Confirmed the opposite, and investigated as instructed.** Euclidean measured the
+FASTEST, not the slowest. The loop investigation found the cost was the metric's
+`abs`/`max`, not the sqrt: a data-dependent `dx < 0 ? -dx : dx` ternary
+mispredicted on scattered coords and ran ~2x slower than the branchless `Math.abs`
+/ `Math.max` intrinsics. Switching to the branchless form (digest-identical --
+`dx` is never `-0`, so `Math.abs` and the ternary agree bit-for-bit; all three
+goldens re-derive unchanged) brought the metrics within a small constant (~1.7x).
+The two off-loop euclidean sqrts cost less than manhattan/chebyshev's two per-
+neighbour abs; the end-sqrts were never the driver. The alloc contract holds
+exactly: 0 bytes/call on all three kernels and the module surface.
 
 ## Consequences
 

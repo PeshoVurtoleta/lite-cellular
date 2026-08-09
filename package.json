@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-cellular",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Zero-GC Worley/cellular noise for 2D. F1/F2 feature-point distances written into a caller-owned out-struct, three metrics fixed at instance creation, zero-alloc field bakes and an exact tileable wrap. Sibling of @zakkster/lite-noise.",
   "type": "module",
   "main": "./Cellular.js",

@@ -1,8 +1,8 @@
 {
-  "note": "Committed euclidean cellular golden. Regenerate ONLY intentionally: node goldens/gen.mjs. A change is breaking (CHANGELOG note required).",
+  "note": "Committed manhattan cellular golden. Regenerate ONLY intentionally: node goldens/gen.mjs. A change is breaking (CHANGELOG note required).",
   "version": "1.0.0",
-  "metric": "euclidean",
-  "metricId": 0,
+  "metric": "manhattan",
+  "metricId": 1,
   "seed": 42,
   "jitter": 1,
   "node": "v26.3.1",
@@ -265,5 +265,5 @@
       -789.012
     ]
   ],
-  "digest": "33a16e9e"
+  "digest": "fa25dafd"
 }

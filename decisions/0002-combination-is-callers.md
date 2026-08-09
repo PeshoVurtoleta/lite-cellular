@@ -1,6 +1,6 @@
 # 0002 -- combination is the caller's: the kernel returns {f1, f2, id} (C1, v1.0.0)
 
-Status: accepted (design-locked ahead of C1), 2026-08-06.
+Status: accepted, 2026-08-08. Implemented in v1.0.0 (C1).
 Anchor: D-02 (ROADMAP.md section 2)
 Owner: C1 (the C0 kernel already returns this shape)
 Depends on: 0001-metric-selection (same "no decision inside the hot loop" principle)
@@ -98,9 +98,13 @@ surface for it to gate.
 
 ## Measured
 
-Greenfield: no before. The binding contract is the alloc gate (`bytesPerOp: 0`).
-The caller-side combo is one subtraction in the caller's own loop and is not the
-library's cost to report. No table.
+Greenfield: no before. The binding contract is the alloc gate (`maxBytesPerCall: 0`
+via `measureAllocs`; the design lock's `bytesPerOp: 0` shorthand is not a real
+profiler rule -- a rate cannot read 0, so C1 gates on retained bytes). Measured at
+v1.0.0: the `{f1, f2, id}` kernel allocates 0 bytes/call on all three metrics and
+the module surface (see `bench/BASELINE.md` / 0001). The caller-side combo is one
+subtraction in the caller's own loop and is not the library's cost to report. No
+throughput table of its own.
 
 ## Consequences
 

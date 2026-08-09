@@ -1,6 +1,6 @@
 # @zakkster/lite-cellular
 
-> Zero-GC Worley/cellular noise for 2D -- F1/F2 feature-point distances written into a caller-owned out-struct, no allocation on the query path.
+> Zero-GC Worley/cellular noise for 2D -- `f1`/`f2` feature-point distances and a per-region `id`, written into a caller-owned out-struct, no allocation on the query path.
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-cellular.svg)](https://www.npmjs.com/package/@zakkster/lite-cellular)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
@@ -17,42 +17,38 @@
 [![status](https://img.shields.io/badge/status-v0.1.0%20scaffold-orange.svg)](./CHANGELOG.md)
 [![tests](https://img.shields.io/badge/torture-node%20--expose--gc-success.svg)](#testing)
 
-## The cellular noise the zero-GC ecosystem was missing
+## The cellular half the noise ecosystem was missing
 
-`@zakkster/lite-noise` owns gradient (Simplex) noise. Worley/cellular noise shares
-**zero machinery** with it -- folding it in would blur the one thing that library
-is. So it lives here, as its own single-file, zero-dependency, zero-allocation
-module. The two compose at the app layer (a cellular `f2 - f1` crack mask times a
-Simplex fbm is canonical), never in the same file.
-
-> **v0.1.0 is the scaffold.** This release ships the euclidean, instance-only
-> kernel and the torture harness every later session extends. The manhattan and
-> chebyshev metrics, the module free-function surface, the field baker and the
-> exact tileable wrap are on the roadmap below. Sections marked **(expanded in
-> v1.0.0)** are stubs until then.
+`@zakkster/lite-noise` gives you gradient (Simplex/Perlin) noise -- smooth, band-limited value fields. It does not give you the OTHER canonical procedural primitive: **cellular / Worley noise**, the distance-to-nearest-feature field that makes cells, cracks, scales, stone, and Voronoi region masks. `lite-cellular` is that half, built to the same bar: zero runtime dependencies, single file, and **zero allocation on every query** -- the result is written into a struct you own, and the 3x3 neighbourhood scan never touches the heap.
 
 ```bash
 npm i @zakkster/lite-cellular
 ```
 
 ```js
-import { createCellular } from '@zakkster/lite-cellular';
+import { createCellular, METRIC_MANHATTAN } from '@zakkster/lite-cellular';
 
-const cell = createCellular(42);           // euclidean, jitter 1
-const c = cell.cellular2(3.5, 7.25);        // { f1, f2, id }
+const cell = createCellular(42, { metric: METRIC_MANHATTAN });
+const out = { f1: 0, f2: 0, id: 0 };
 
-const blobs  = c.f1;                         // distance to nearest feature point
-const cracks = c.f2 - c.f1;                  // Voronoi edges -- one subtraction
-const region = c.id;                         // stable per-cell tag (flat-shade)
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W; x++) {
+    cell.cellular2(x * 0.05, y * 0.05, out); // zero-alloc: writes into `out`
+    const blobs  = out.f1;                    // distance to nearest feature point
+    const cracks = out.f2 - out.f1;           // Voronoi edges -- one subtraction
+    const region = out.id;                    // stable per-cell tag (flat shading)
+  }
+}
 ```
 
 ## Contents
 
 - [Why this exists](#why-this-exists)
 - [What you get](#what-you-get)
-- [How it works: feature points and jitter](#how-it-works-feature-points-and-jitter)
+- [The core surface](#the-core-surface)
 - [API reference](#api-reference)
-- [Composability](#composability-expanded-in-v100)
+- [Metrics, jitter, and the id tag](#metrics-jitter-and-the-id-tag)
+- [Composability](#composability)
 - [Zero-GC design notes](#zero-gc-design-notes)
 - [Design decisions worth knowing](#design-decisions-worth-knowing)
 - [Testing](#testing)
@@ -62,174 +58,259 @@ const region = c.id;                         // stable per-cell tag (flat-shade)
 
 ## Why this exists
 
-Cellular noise scatters one feature point per grid cell and answers a query from
-the nearest points around it: `f1` (nearest distance) makes blobs/cells, `f2 - f1`
-makes cracks and cell walls, `f2` makes a softer field. The two distances are a
-strict superset of every texture combo, so the kernel returns the raw pair and
-lets the caller do the one subtraction they want -- no lossy `combo` enum on the
-hot path.
+Cellular noise's textures are combinations of the two nearest feature-point distances:
 
-Most Worley snippets allocate a result object per query and branch on a mode
-string. This one writes `{ f1, f2, id }` into a struct you own, over a fixed 3x3
-scan of scalar math, allocating nothing after construction. That is the whole
-point: it runs in a per-pixel or per-particle loop without feeding the GC.
+- `f1`      -> blobs / cells (distance to the nearest point)
+- `f2 - f1` -> cracks / cell walls (the Voronoi edges)
+- `f2`      -> a softer cell field
+
+Most minimal Worley snippets return `f1` only, allocate a fresh result object per
+call, and branch on a string metric inside the 9-cell loop. Each of those is a
+correctness or performance hazard at scale (a field bake is millions of queries).
+`lite-cellular` returns the raw `{ f1, f2, id }` pair-plus-tag (a strict superset of
+every combination -- the caller does the one arithmetic op they want), writes it
+into a struct you own, and resolves the metric to one inlined kernel **once** at
+construction so the loop stays monomorphic and branch-free.
 
 ## What you get
 
-- **`createCellular(seed, opts?)`** -- an isolated instance owning one reused
-  out-struct and nothing else (no permutation table).
-- **`cellular2(x, y, out?)`** -- the euclidean F1/F2 kernel, zero-alloc,
-  fail-closed on non-finite coords.
-- **`reseed(seed)`** -- change the field in place at setup time.
-- **True euclidean distance** -- squared in the loop, two sqrts at the end, so
-  `f2 - f1` is in world units.
-- **A stable, SMI-safe `id`** for flat-shading Voronoi regions without a second
-  query.
-- **A torture gate** proving the query path allocates nothing, and an euclidean
-  golden pinning the field bit-for-bit.
+- **Three distance metrics**, fixed at instance creation via an integer id:
+  euclidean (L2), manhattan (L1), chebyshev (Linf). All report LINEAR units.
+- **`{ f1, f2, id }` per query** -- the two nearest distances and the F1 owner's
+  stable per-region tag. Combinations (`f2 - f1`, `f1 * f2`, ...) are the caller's.
+- **Zero allocation on the query path** -- proven, not asserted: the torture gate
+  measures `maxBytesPerCall: 0` retained bytes and `maxArrayBuffersGrowth: 0`.
+- **Instance isolation (NS-01)** -- two instances never cross-contaminate; a module
+  free surface (`cellular2` / `seedCellular`) for zero-config use.
+- **Deterministic and reproducible** -- pure function of `(seed, cell coords)`,
+  pinned by three committed goldens.
 
-## How it works: feature points and jitter
+<details>
+<summary><b>The core surface</b> -- what a query actually does</summary>
 
-Each grid cell `(cx, cy)` places one feature point at:
+A query at `(x, y)` finds the integer cell `(floor(x), floor(y))` and scans the
+fixed 3x3 neighbourhood of cells around it. Each cell deterministically scatters
+one feature point at `cell + 0.5 + jitter*(u - 0.5)`, where `u`/`v` in `[0,1)` come
+from a hash of the integer cell coordinates and the seed. For each of the 9 points
+the kernel computes the distance under this instance's metric and keeps the two
+smallest (`f1`, `f2`) plus the primary hash of the F1 owner (`id`).
 
-```
-fx = cx + 0.5 + jitter * (u - 0.5)
-fy = cy + 0.5 + jitter * (v - 0.5)      with u, v in [0, 1) from a hash of (cx, cy, seed)
-```
+`jitter <= 1` is a correctness precondition, not a cosmetic knob: it keeps every
+feature point inside its home cell, which is exactly the condition under which the
+fixed 3x3 neighbourhood is guaranteed to contain the TRUE nearest and second-nearest
+points. `jitter > 1` throws (fail-closed) rather than silently voiding that
+guarantee near cell corners.
 
-- `jitter = 0` -> the exact cell centre: a regular grid (a useful control).
-- `jitter = 1` -> anywhere in the cell: full Worley.
-- in between: a linear blend, the point always inside its own cell.
+The metric is dropped from the loop entirely: there are three metric-specific
+kernels, and the constructor binds exactly one to `this._kernel`. So the per-query
+cost is one indirect call OFF the loop and zero metric branches per neighbour.
 
-`jitter` in `[0, 1]` is not cosmetic clamping -- it is the correctness precondition
-of the fixed 3x3 loop. As long as every feature point stays inside its cell, the
-3x3 neighbourhood around the query is guaranteed to contain the true `f1` and `f2`.
-`jitter > 1` would let a point escape its cell and silently void that guarantee, so
-it throws rather than clamps.
-
-`cellular2` accumulates **squared** distance across the nine cells and takes one
-`sqrt` for `f1` and one for `f2` at the very end -- no `sqrt` inside the loop, and
-the result is true euclidean distance so cross-metric comparisons (v1.0.0) and
-`f2 - f1` stay in the same linear units.
+</details>
 
 ## API reference
 
 ```ts
-const VERSION: string;             // '0.1.0'
-const METRIC_EUCLIDEAN: 0;         // the default and only accepted id in v0.1.0
+import {
+  createCellular, Cellular,
+  cellular2, seedCellular,
+  VERSION, METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV,
+} from '@zakkster/lite-cellular';
 
 interface CellularResult { f1: number; f2: number; id: number; }
 interface CellularOptions { metric?: number; jitter?: number; }
 
+// Create an independent instance. Throws on a bad metric id or out-of-range jitter.
 function createCellular(seed?: number, opts?: CellularOptions): Cellular;
 
 class Cellular {
-    constructor(seed?: number, opts?: CellularOptions);
-    cellular2(x: number, y: number, out?: CellularResult): CellularResult;
-    reseed(seed: number): this;
+  constructor(seed?: number, opts?: CellularOptions);
+  // Sample at (x, y). Writes into `out` (and returns it) or the reused instance
+  // struct. Zero allocation. Throws on non-finite x or y.
+  cellular2(x: number, y: number, out?: CellularResult): CellularResult;
+  // Re-seed in place. Setup only. Returns this.
+  reseed(seed: number): this;
 }
+
+// Module free surface: euclidean, jitter 1, shared module seed. Zero-config.
+function cellular2(x: number, y: number, out?: CellularResult): CellularResult;
+// Re-seed the shared module field. Warns once in dev on a 2nd call; silent in prod.
+function seedCellular(seed?: number): void;
 ```
+
+### Constants
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `VERSION` | `'0.1.0'` | package version (two-place sync with `package.json`) |
-| `METRIC_EUCLIDEAN` | `0` | euclidean metric id; the default. `1`/`2` reserved for v1.0.0 and rejected until then |
+| `VERSION` | `'1.0.0'` | In lockstep with `package.json` + `llms.txt` (three-place sync). |
+| `METRIC_EUCLIDEAN` | `0` | L2, `sqrt(dx*dx + dy*dy)`. The default. |
+| `METRIC_MANHATTAN` | `1` | L1, `|dx| + |dy|`. Diamond cells. |
+| `METRIC_CHEBYSHEV` | `2` | Linf, `max(|dx|, |dy|)`. Square cells. |
 
-**Fail-closed contract.** An unknown metric id (anything but `0` in v0.1.0), a
-`jitter` outside `[0, 1]` or non-finite, and non-finite query coords each throw a
-library `Error`. `null` is not zero.
+An unknown metric id (`3`, `-1`, `1.5`, `'euclidean'`, `null`, ...) throws at
+construction: the guard accepts `0`/`1`/`2` and never loosens.
 
-**`out` semantics.** Pass an out-struct and it is written in place and returned;
-omit it and the instance's own reused struct is returned (a caller that retains it
-across calls is holding scratch the next call overwrites). No allocation either
-way.
+## Metrics, jitter, and the id tag
 
-> **Metrics (expanded in v1.0.0).** manhattan and chebyshev, fixed at instance
-> creation via integer id so the hot loop stays branch-free, with the pointwise
-> law `chebyshev <= euclidean <= manhattan`. The full metrics-and-jitter deep-dive
-> and its allocation/quality tables land with the v1.0.0 core.
+**Metrics.** All three share one feature-point placement and differ only in the
+distance line. Euclidean returns TRUE distance (squared in the loop, one sqrt each
+for `f1`/`f2` at the end), so it is in the same LINEAR units as manhattan and
+chebyshev. That unit coherence is load-bearing: the pointwise inequality
+`chebyshev <= euclidean <= manhattan` (`Linf <= L2 <= L1`) holds for BOTH `f1` and
+`f2`, and the caller's `f2 - f1` crack width is a real world-space distance in every
+metric. The metric is immutable per instance -- to change it, create another.
 
-## Composability (expanded in v1.0.0)
+**Jitter** in `[0, 1]`: `0` is the exact grid of cell centres (a regular pattern, a
+useful reference), `1` is full Worley scatter, in between is a linear blend. The
+bound is the 3x3 scan's correctness contract (see the core-surface note). Immutable
+per instance; validated once at construction; `jitter > 1` throws.
 
-The money surface -- `fillCellField2` (a zero-alloc field bake) and `tileableCell2`
-(an exact seam wrap) -- plus the end-to-end recipes with `@zakkster/lite-noise`
-(a `f2 - f1` crack mask times a Simplex fbm -> weathered stone) and
-`@zakkster/lite-gradient-studio` (F1 through a LUT) land in v1.1.0. Until then the
-composition is caller-side: sample `cellular2` in your own loop and combine the
-raw `f1`/`f2` with whatever else you are drawing.
+**The `id` tag** is the F1 owner cell's primary hash, coerced with `| 0` (signed
+int32, SMI-safe -- NOT `>>> 0`, which would box values above 2^31 into heap doubles
+and defeat using `id` as a `Map` key). It is opaque and stable per Voronoi region:
+constant for every query whose nearest feature point is the same cell's, and it
+flips exactly at the boundary -- so you can flat-shade regions with one query, no
+second pass. The owner is metric-dependent by design: the same coord under two
+metrics may report different `id`.
 
-## Zero-GC design notes
+## Composability
 
-- The query path (`cellular2`) allocates **nothing** after construction: a fixed
-  3x3 loop of scalar math writing into a caller-owned struct, no temporaries, no
-  closures.
-- A `Cellular` instance owns exactly one allocation -- its reused out-struct.
-  There is no permutation table: cellular scatters one point per cell on demand,
-  so there is no lattice to permute.
-- Zero-alloc here is **not** a heap heuristic. The T6 torture tier gates
-  `maxArrayBuffersGrowth: 0` alongside `maxMajor: 0` with `stabilize: 'deep'`, so a
-  regression that allocated a typed-array backing store -- invisible to a plain
-  `heapUsed` gate -- fails the gate. Every gate ships a T9 control proven able to
-  fail, and `CELLULAR_TORTURE_BREAK=1` makes the run exit non-zero.
+Cellular composes with `@zakkster/lite-noise` at the app layer -- warp a cellular
+field with gradient noise, or multiply a crack mask into an fbm. The combination is
+always the caller's arithmetic, in the caller's loop, on caller-owned scratch:
 
-| Path | Allocations |
-| --- | --- |
-| `createCellular` / `new Cellular` | 1 (the reused out-struct) |
-| `cellular2(x, y, out)` | 0 |
-| `cellular2(x, y)` (omitted out) | 0 (returns the reused struct) |
-| `reseed(seed)` | 0 |
+```js
+import { createCellular } from '@zakkster/lite-cellular';
+import { createNoise } from '@zakkster/lite-noise';
+
+const cell = createCellular(1337);          // euclidean, jitter 1
+const warp = createNoise(99);
+const out = { f1: 0, f2: 0, id: 0 };
+
+function stoneMask(x, y) {
+  // Domain-warp the sample point with gradient noise, then read cracks.
+  const wx = x + 0.4 * warp.simplex2(x * 0.3, y * 0.3);
+  const wy = y + 0.4 * warp.simplex2(x * 0.3 + 5.2, y * 0.3 + 1.7);
+  cell.cellular2(wx, wy, out);
+  const cracks = out.f2 - out.f1;           // Voronoi edges
+  return cracks < 0.05 ? 0 : 1;             // thin dark mortar between stones
+}
+```
+
+For the zero-config case, the module free functions share one seed:
+
+```js
+import { cellular2, seedCellular } from '@zakkster/lite-cellular';
+seedCellular(42);
+const c = cellular2(3.5, 7.25);             // euclidean, jitter 1, shared seed
+```
+
+<details>
+<summary><b>Zero-GC design notes</b> -- the allocation table and how it is proven</summary>
+
+Every owned allocation of a `Cellular` instance:
+
+| Allocation | When | Per query? |
+| --- | --- | --- |
+| the instance object + its scalars | `createCellular` | no |
+| one reused out-struct `{ f1, f2, id }` | `createCellular` | no (reused) |
+| (no permutation table) | -- | cellular scatters on demand |
+| the query itself | `cellular2` | **0 bytes** |
+
+`cellular2` reads locals only (state is passed as arguments, never `this.*` in the
+loop), keeps `f1`/`f2`/`id` in registers, and writes three fields into the struct
+you passed (or the reused one). It allocates nothing.
+
+**Zero-alloc is not a heap heuristic here.** The torture gate proves it two ways
+with `@zakkster/lite-gc-profiler`:
+
+- `measureAllocs` `maxBytesPerCall: 0` -- per-call RETAINED bytes after a forced
+  collection. `0` is the literal zero-retention claim, measured best-of-5 (the
+  budget stays 0; best-of-N only sheds the estimator's rare sub-byte fluke). A
+  `measureOps` allocation RATE is deliberately NOT used: a rate has a documented V8
+  self-noise floor and can never read 0.
+- `measureOps` `maxArrayBuffersGrowth: 0` and `maxMajor: 0` (with
+  `stabilize: 'deep'`) -- ArrayBuffer backing stores live outside the V8 heap where
+  a plain heap gate is blind; this catches any retained typed-array growth.
+
+Both run for all three metrics AND the module surface, and each gate ships a
+control that must trip it (a per-query object that escapes, a retained
+Float64Array) so the gate is provably able to fail.
+
+Indicative throughput (best-of-5 `measureOps`, node v26.3.1; ~2x run-to-run
+variance -- the alloc gate is the contract, not this):
+
+| probe | Mops/s | bytesPerCall |
+| --- | --- | --- |
+| `cellular2` euclidean | ~14.7 | 0 |
+| `cellular2` manhattan | ~9.5 | 0 |
+| `cellular2` chebyshev | ~8.5 | 0 |
+| module `cellular2` | ~14.7 | 0 |
+
+</details>
 
 ## Design decisions worth knowing
 
-- **Combination is the caller's.** The kernel returns exactly `{ f1, f2, id }`;
-  `f2 - f1` is one subtraction you do. `{f1, f2}` is a strict superset of every
-  combo, so a pre-combined single number would be lossy.
-- **`id` is the F1 owner's hash, `| 0` (signed int32).** SMI-safe so it never
-  boxes as a heap double when used as a `Map` key; opaque and stable per Voronoi
-  region. `>>> 0` would push large values out of the small-integer range.
-- **The metric and jitter are immutable per instance.** The feature field is a
-  pure function of `(seed, jitter, metric)`; freezing them keeps the instance
-  deterministic. `reseed` changes the seed only -- to change metric or jitter,
-  create another instance.
+The four decisions this release implements are committed in `decisions/`:
 
-The full decision records live under `decisions/` (`0001`..`0004`).
+- **[0001](decisions/0001-metric-selection.md)** -- the metric is an integer id
+  bound to one inlined kernel per metric; the loop is monomorphic and branch-free.
+  Euclidean returns true distance, not squared, for unit coherence.
+- **[0002](decisions/0002-combination-is-callers.md)** -- the kernel returns exactly
+  `{ f1, f2, id }`; combinations (`f2 - f1`, ...) are the caller's one op, never a
+  per-query `combo` parameter.
+- **[0003](decisions/0003-jitter-and-hash.md)** -- `jitter` in `[0, 1]` is the 3x3
+  scan's correctness contract; the hash is an allocation-free integer mix of the
+  cell coords + seed, with two decorrelated draws (measured uniform, `corr ~ 0`).
+- **[0004](decisions/0004-cell-id.md)** -- `id` is the F1 owner's hash coerced with
+  `| 0` (SMI-safe), opaque, stable per region, metric-dependent owner.
 
 ## Testing
 
 ```bash
 npm test          # node --expose-gc --test test/*.test.js
-npm run torture   # node --expose-gc test/torture.mjs  -> prints exactly "ok"
-npm run verify    # test + torture
+npm run torture   # node --expose-gc test/torture.mjs   -> prints exactly "ok"
+npm run verify    # both
 ```
 
-| Group | What is tested |
-| --- | --- |
-| Construction | valid seed/metric/jitter; a bad metric id throws; jitter `-0.1`/`1.1`/`NaN`/`Infinity` throw; boundaries `0`/`1` accepted |
-| cellular2 | non-finite coords throw at the door; jitter=0 hand-pinned exact distances; `f1 <= f2 >= 0`; `out` written in place and returned; omitted `out` returns the reused struct |
-| Determinism | same seed+coord -> identical `f1`/`f2`/`id`; `reseed` changes the field and reproduces |
-| Golden | `goldens/euclidean.json` re-derives bit-for-bit (a change is breaking) |
+50 `node:test` assertions across `Cellular.test.js`, `boundary.test.js`, and
+`bundle.test.js`, plus a 7-tier torture gate:
 
-The torture suite (T0 laws, T6 zero-alloc, T7 retention, T9 controls; T1/T5
-reserved) is the DONE-WHEN of every session. `CELLULAR_TORTURE_BREAK=1
-node --expose-gc test/torture.mjs` exits non-zero -- the proof the gate can fail.
+| Tier | What it proves |
+| --- | --- |
+| T0 | metamorphic laws: determinism, `f1 <= f2`, metric-sanity ordering (f1 AND f2), per-metric jitter=0 grid distance, id-within-cell, three goldens (euclidean `33a16e9e` unchanged) |
+| T1 | degenerate values across three metrics (0/-0, non-finite throws, subnormal, f32-max, 2^24 boundary) |
+| T3 | world-scale precision walk per metric, with a PINNED limit (precise to 1e12; degenerates at 2^52) |
+| T5 | NS-01 isolation: instance-vs-instance, module-vs-instance, reseed reproducibility, interleaved cross-contamination fuzz |
+| T6 | the zero-alloc gate: `maxBytesPerCall: 0` + `maxArrayBuffersGrowth: 0` for three metrics + the module surface |
+| T7 | dropped instances of every metric are collectable (lite-leak) |
+| T9 | controls -- every gate proven able to fail |
+
+Two break controls exit non-zero on purpose: `CELLULAR_TORTURE_BREAK=1` (injects a
+retained allocation into T6) and `CELLULAR_TORTURE_SHARED_SEED=1` (runs a
+shared-seed build through T5's isolation law).
 
 ## What this is not
 
-- **Not full Voronoi topology** (edges, vertices, adjacency, Lloyd relaxation) --
-  that is a geometry structure, a different library. This ships the noise field
-  (F1/F2 distances), not the diagram.
-- **Not gradient/Simplex/Perlin noise** -- that is `@zakkster/lite-noise`.
+- **Not a Voronoi diagram.** No edges, vertices, adjacency, or Lloyd relaxation --
+  that is a geometry structure, a different library. This is the noise field.
+- **Not gradient noise.** Simplex/Perlin/value noise is `@zakkster/lite-noise`.
 - **Not a flow-field source.** `f1` has derivative discontinuities at cell
-  boundaries by construction (the creases are the point), so it cannot feed an
-  analytic curl/flow field. Use lite-noise for flow.
+  boundaries by construction; it cannot feed an analytic curl/flow field.
 - **Not cryptographic.** The hash is for reproducible scatter, not security.
+- **Not 3D or a field baker (yet).** `cellular3`, `fillCellField2`, and the exact
+  tileable wrap land in v1.1.0 (C2) and v1.2.0 (C3). No `combo`/`mode` per query.
+- **Not precise past ~2^52.** Beyond the float64 integer limit the 3x3
+  neighbourhood degenerates (the pinned v1.0.0 world-scale limit).
 
 ## Ecosystem
 
-- **`@zakkster/lite-noise`** -- gradient (Simplex) noise, zero-GC. The sibling this
-  package composes with at the app layer.
-- **`@zakkster/lite-gc-profiler`** / **`@zakkster/lite-leak`** -- the torture gate
-  and retention gate (devDependencies only; `Cellular.js` has zero runtime deps).
+- **[@zakkster/lite-noise](https://www.npmjs.com/package/@zakkster/lite-noise)** --
+  gradient (Simplex) noise + fbm/ridged/billow. The sibling; composes at the app
+  layer.
+- **[@zakkster/lite-gc-profiler](https://www.npmjs.com/package/@zakkster/lite-gc-profiler)**
+  and **[@zakkster/lite-leak](https://www.npmjs.com/package/@zakkster/lite-leak)**
+  -- the zero-GC gate and retention tracker this package's torture suite runs on
+  (dev dependencies only).
 
 ## License
 

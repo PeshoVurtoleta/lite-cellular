@@ -1,7 +1,6 @@
 # 0004 -- the cell id: F1 owner's hash, SMI-safe (C1, v1.0.0)
 
-Status: accepted (design-locked ahead of C1), 2026-08-06.
-  Implements the C0 working convention; the golden pins `id`.
+Status: accepted, 2026-08-08. Implemented in v1.0.0 (C1); the golden pins `id`.
 Anchor: D-04 (ROADMAP.md section 2)
 Owner: C1 (produced by the C0 kernel)
 Depends on: 0003-jitter-and-hash (id is a by-product of that hash),
@@ -94,10 +93,14 @@ loop gains a single assignment on the already-taken swap path. T6 gates it.
 
 ## Measured
 
-Greenfield: no before. Contract is the alloc gate (`bytesPerOp: 0`) -- `id`
-capture must not perturb it. The golden (0001/C0) includes the `id` stream, so any
-drift in owner selection or derivation is a golden break. No throughput claim is
-made for a single field write.
+Greenfield: no before. Contract is the alloc gate (`maxBytesPerCall: 0` via
+`measureAllocs`; the design lock's `bytesPerOp: 0` shorthand is not a real profiler
+rule) -- the `id` capture and `| 0` must not perturb it, and measured at v1.0.0 it
+does not: 0 bytes/call on all three metrics (see `bench/BASELINE.md`). The `| 0`
+keeps `id` a signed int32 inside V8's SMI range (T7's boundary sweep observes
+negative ids, confirming `| 0` is not a no-op cast). All three goldens (0001/C1)
+include the `id` stream, so any drift in owner selection or derivation is a golden
+break. No throughput claim is made for a single field write.
 
 ## Consequences
 

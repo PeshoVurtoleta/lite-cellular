@@ -1,7 +1,7 @@
 # 0003 -- jitter range + the cell hash (C1, v1.0.0)
 
-Status: accepted (design-locked ahead of C1), 2026-08-06.
-  Implements the C0 working convention; the golden pins the exact draw.
+Status: accepted, 2026-08-08. Implemented in v1.0.0 (C1); the golden pins the exact
+  draw and the Measured table below is filled from the built kernel.
 Anchor: D-03 (ROADMAP.md section 2)
 Owner: C1 (mechanics stood up in C0)
 Depends on: C0 (the euclidean kernel that first placed feature points)
@@ -135,16 +135,24 @@ query path. Provable by reading the kernel and by T6.
 ## Measured
 
 Greenfield: no before. The binding contract is the alloc gate
-(`bytesPerOp: 0`, `maxArrayBuffersGrowth: 0`) plus two **distribution** checks the
-golden alone does not give -- run at C1 and reported qualitatively, not as a
-throughput number:
+(`maxBytesPerCall: 0` via `measureAllocs`, `maxArrayBuffersGrowth: 0`; the design
+lock's `bytesPerOp: 0` shorthand is not a real profiler rule) plus two
+**distribution** checks the golden alone does not give. Measured at v1.0.0 over
+640,000 cells (`cx, cy` in `[-400, 400)`, seed 42, 16 bins):
 
-- a chi-square / histogram of `u` and `v` over a large cell range is
-  approximately uniform, and their 2D join shows no diagonal banding
-  (decorrelation), and
-- the field has no visible axis-aligned streaks at low jitter.
+- **Uniformity.** `mean(u) = 0.50038`, `mean(v) = 0.50042` (ideal 0.5).
+  Chi-square (16 bins, df=15, 0.05 critical ~25.0): `u = 16.8`, `v = 13.8` -- both
+  well under the critical value, i.e. no rejection of uniform. The 2D joint
+  chi-square (256 cells, df=255, 0.05 critical ~293) is `235.8`: also under, so the
+  join is uniform, not banded.
+- **Decorrelation.** `corr(u, v) = 0.00034` (ideal 0) -- the two draws are
+  independent, so the feature point is not pinned to a diagonal and there is no
+  axis-aligned streaking at low jitter.
 
-The ops/sec table is filled from the C1 build at ship; not guessed here.
+Throughput (best-of-5, indicative; the alloc gate is the contract) -- the same
+placement runs under all three metrics, so the figures are per 0001:
+`cellular2` euclidean ~14.7 Mops/s, manhattan ~9.5, chebyshev ~8.5, module ~14.7;
+`bytesPerCall = 0` on all four. See `bench/BASELINE.md`.
 
 ## Consequences
 
