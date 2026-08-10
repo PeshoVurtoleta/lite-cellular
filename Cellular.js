@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-cellular v1.1.0 -- the texture surface.
+ * @zakkster/lite-cellular v1.2.0 -- the texture surface, in 2D and 3D.
  *
  * Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two
  * nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written
@@ -19,7 +19,20 @@
  *     (`===`, not epsilon) and seamless by construction (decisions/0006).
  * The plain `cellular2` path is byte-for-byte unchanged from C1 -- the tiling wrap
  * lives in three SEPARATE kernels, so the per-query hot loop pays nothing for it.
- * `cellular3` / `fillCellField3` land in C3.
+ *
+ * v1.2.0 (C3) LIFTS the whole 2D surface into 3D -- a verbatim lift of decisions
+ * 0001..0006 with the coordinate count bumped 2 -> 3, closing decisions/0007. Three
+ * INSTANCE methods, all zero-alloc, over the 3x3x3 = 27-cell neighbourhood:
+ *   - `cellular3(x, y, z, out?)` -- the 27-cell scan; same `{f1,f2,id}` shape.
+ *   - `fillCellField3(dst, w, h, d, opts?)` -- 0005's baker lifted to a volume.
+ *   - `tileableCell3(x, y, z, periodX, periodY, periodZ, out?)` -- 0006's exact
+ *     integer-cell wrap on all three axes.
+ * There are SIX 3D kernels (three plain + three tiling), each fully inlined with the
+ * metric dropped and bound once (`this._kernel3` / `this._tileKernel3`) -- twelve
+ * kernels across 2D+3D, NEVER one dimension-parameterised loop (0007 Decision 3). The
+ * entire 2D surface is byte-unchanged; there is no module 3D surface and no 4D (0007
+ * Decision 4). The 3D hashes extend the C0 `_hash2` chain with a third decorrelated
+ * draw `w` for the z axis (0003).
  *
  * The metric is NOT threaded into the hot loop. There are three metric-specific
  * kernels, each with its distance expression inlined and the metric param DROPPED;
@@ -51,7 +64,7 @@
  * @license MIT
  */
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // The metric id space (0001). C0 opened id 0; C1 opens 1 and 2. The guard widens
 // the accepted set (0/1/2) -- it never loosens: any other value still throws.
@@ -318,6 +331,266 @@ function _tileableCell2Chebyshev(seed, jitter, periodX, periodY, x, y, out) {
     return out;
 }
 
+// --- 3D hash: integer cell coords + seed -> uint32 (0003, 0007) -------------
+// The C0 `_hash2`/`_hash2b` chain extended with a third axis and a THIRD
+// decorrelated draw `w` for the z placement (0007 Decision 2: lift 0003 to R^3).
+// Three integer-only mixes with distinct salts, per-axis multipliers, and
+// finalizers, so the feature point of a 3D cell scatters without a diagonal or an
+// axis artefact. Pure functions of the INTEGER cell coords and the seed -- the same
+// determinism anchor the 2D hashes are, so the 3D goldens pin them bit-for-bit.
+// Shared verbatim by all six 3D kernels; placement is metric-independent (0003).
+
+/** Primary 3D draw -> the cell's `u` and the cell `id` source. Returns a uint32. */
+function _hash3(cx, cy, cz, seed) {
+    let h = seed | 0;
+    h = (h + Math.imul(cx | 0, 0x27d4eb2f)) | 0;
+    h = (h + Math.imul(cy | 0, 0x165667b1)) | 0;
+    h = (h + Math.imul(cz | 0, 0x9e3779b1)) | 0;
+    h = Math.imul(h ^ (h >>> 15), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 7), h | 61);
+    return (h ^ (h >>> 14)) >>> 0;
+}
+
+/** Second, decorrelated 3D draw for the `v` axis (distinct salts). Returns a uint32. */
+function _hash3b(cx, cy, cz, seed) {
+    let h = (seed ^ 0x9e3779b9) | 0;
+    h = (h + Math.imul(cx | 0, 0x85ebca6b)) | 0;
+    h = (h + Math.imul(cy | 0, 0xc2b2ae35)) | 0;
+    h = (h + Math.imul(cz | 0, 0x27d4eb2f)) | 0;
+    h = Math.imul(h ^ (h >>> 13), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 9), h | 63);
+    return (h ^ (h >>> 16)) >>> 0;
+}
+
+/** Third, decorrelated 3D draw for the `w` axis (distinct salts). Returns a uint32. */
+function _hash3c(cx, cy, cz, seed) {
+    let h = (seed ^ 0x85ebca6b) | 0;
+    h = (h + Math.imul(cx | 0, 0xc2b2ae35)) | 0;
+    h = (h + Math.imul(cy | 0, 0x9e3779b1)) | 0;
+    h = (h + Math.imul(cz | 0, 0x165667b1)) | 0;
+    h = Math.imul(h ^ (h >>> 14), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 11), h | 59);
+    return (h ^ (h >>> 15)) >>> 0;
+}
+
+// --- the six 3D kernels: ZERO allocation, fixed 3x3x3 loop, scalar only ------
+// A verbatim lift of the six 2D kernels with the coordinate count bumped 2 -> 3 and
+// the neighbourhood grown 9 -> 27 cells (0007 Decision 2/3). The metric is DROPPED
+// exactly as in 2D: three plain + three tiling kernels, each with one distance line
+// inlined, bound once at construction to `this._kernel3` / `this._tileKernel3`, so
+// the per-query cost is one indirect call OFF the 27-cell loop and zero metric
+// branches per neighbour. NEVER a dimension-parameterised loop (0007 Decision 3):
+// keeping them separate and inlined is the monomorphism the package is built on.
+// The 2D kernels above are byte-unchanged.
+
+/**
+ * EUCLIDEAN 3D kernel. Accumulates SQUARED distance over the 27-cell loop (no sqrt
+ * per neighbour) and takes one sqrt for f1 and one for f2 at the very end -- TRUE
+ * euclidean distance in R^3 (0001 Decision 3, lifted 0007).
+ */
+function _cellular3Euclid(seed, jitter, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: cellular3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const cx = ix + gx, cy = iy + gy, cz = iz + gz;
+                const h = _hash3(cx, cy, cz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(cx, cy, cz, seed) / _UINT32;
+                const w = _hash3c(cx, cy, cz, seed) / _UINT32;
+                const dx = (cx + 0.5 + jitter * (u - 0.5)) - x;
+                const dy = (cy + 0.5 + jitter * (v - 0.5)) - y;
+                const dz = (cz + 0.5 + jitter * (w - 0.5)) - z;
+                const d = dx * dx + dy * dy + dz * dz;   // euclidean: squared, no sqrt here
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }   // | 0 not >>> 0 (0004)
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = Math.sqrt(f1);   // two sqrts, off the loop, once each (0001)
+    out.f2 = Math.sqrt(f2);
+    out.id = id;
+    return out;
+}
+
+/**
+ * MANHATTAN (L1) 3D kernel. Distance is `|dx| + |dy| + |dz|`, accumulated directly
+ * -- no sqrt anywhere. Branchless `Math.abs` (a V8 intrinsic) for the same reason
+ * as the 2D kernel (0001 Measured). Linear units, so the metric-sanity law holds.
+ */
+function _cellular3Manhattan(seed, jitter, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: cellular3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const cx = ix + gx, cy = iy + gy, cz = iz + gz;
+                const h = _hash3(cx, cy, cz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(cx, cy, cz, seed) / _UINT32;
+                const w = _hash3c(cx, cy, cz, seed) / _UINT32;
+                const dx = (cx + 0.5 + jitter * (u - 0.5)) - x;
+                const dy = (cy + 0.5 + jitter * (v - 0.5)) - y;
+                const dz = (cz + 0.5 + jitter * (w - 0.5)) - z;
+                const d = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);   // manhattan: no sqrt
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = f1;              // already linear -- no sqrt (0001)
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
+/**
+ * CHEBYSHEV (Linf) 3D kernel. Distance is `max(|dx|, |dy|, |dz|)`, accumulated
+ * directly -- no sqrt anywhere. Branchless `Math.abs` / `Math.max` (0001 Measured).
+ */
+function _cellular3Chebyshev(seed, jitter, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: cellular3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const cx = ix + gx, cy = iy + gy, cz = iz + gz;
+                const h = _hash3(cx, cy, cz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(cx, cy, cz, seed) / _UINT32;
+                const w = _hash3c(cx, cy, cz, seed) / _UINT32;
+                const dx = (cx + 0.5 + jitter * (u - 0.5)) - x;
+                const dy = (cy + 0.5 + jitter * (v - 0.5)) - y;
+                const dz = (cz + 0.5 + jitter * (w - 0.5)) - z;
+                const d = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));   // chebyshev: no sqrt
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = f1;              // already linear -- no sqrt (0001)
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
+// The three TILING 3D kernels mirror the three plain 3D kernels with ONE change: the
+// three hash inputs per neighbour are reduced mod their period via `_wrap` (0006
+// Decision 1/4, lifted to R^3), and the distance is taken in the query cell's LOCAL
+// frame (`rx = x - floor(x)`, etc.) so the exact-`===` periodicity is REAL, not float
+// epsilon -- wrapping the FLOAT coord instead of the integer cell is the anti-pattern
+// 0006 rejects. Kept as three separate inlined functions for the monomorphism 0001
+// keeps three.
+
+/** EUCLIDEAN 3D tiling kernel: euclid in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell3Euclid(seed, jitter, periodX, periodY, periodZ, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: tileableCell3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const rx = x - ix, ry = y - iy, rz = z - iz;   // fractional home-cell position; bit-stable under +period
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY), wz = _wrap(iz + gz, periodZ);
+                const h = _hash3(wx, wy, wz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(wx, wy, wz, seed) / _UINT32;
+                const w = _hash3c(wx, wy, wz, seed) / _UINT32;
+                const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;   // local frame: small, magnitude-stable
+                const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+                const dz = (gz + 0.5 + jitter * (w - 0.5)) - rz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = Math.sqrt(f1);
+    out.f2 = Math.sqrt(f2);
+    out.id = id;
+    return out;
+}
+
+/** MANHATTAN 3D tiling kernel: L1 in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell3Manhattan(seed, jitter, periodX, periodY, periodZ, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: tileableCell3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const rx = x - ix, ry = y - iy, rz = z - iz;
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY), wz = _wrap(iz + gz, periodZ);
+                const h = _hash3(wx, wy, wz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(wx, wy, wz, seed) / _UINT32;
+                const w = _hash3c(wx, wy, wz, seed) / _UINT32;
+                const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;
+                const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+                const dz = (gz + 0.5 + jitter * (w - 0.5)) - rz;
+                const d = Math.abs(dx) + Math.abs(dy) + Math.abs(dz);
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = f1;
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
+/** CHEBYSHEV 3D tiling kernel: Linf in the home-cell LOCAL frame, hash inputs wrapped mod period. */
+function _tileableCell3Chebyshev(seed, jitter, periodX, periodY, periodZ, x, y, z, out) {
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        throw new Error(
+            'lite-cellular: tileableCell3 requires finite x, y and z (got ' + x + ', ' + y + ', ' + z + ')');
+    }
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const rx = x - ix, ry = y - iy, rz = z - iz;
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY), wz = _wrap(iz + gz, periodZ);
+                const h = _hash3(wx, wy, wz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(wx, wy, wz, seed) / _UINT32;
+                const w = _hash3c(wx, wy, wz, seed) / _UINT32;
+                const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;
+                const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+                const dz = (gz + 0.5 + jitter * (w - 0.5)) - rz;
+                const d = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
+        }
+    }
+    out.f1 = f1;
+    out.f2 = f2;
+    out.id = id;
+    return out;
+}
+
 // `combo` string -> small-int selector, decoded ONCE before the bake loop (0005
 // Decision 2), mirroring lite-noise's `_TF2_MODELS`. The pixel loop branches on the
 // small int, NEVER re-parses the string. `undefined` for an unknown key is the
@@ -364,6 +637,16 @@ export class Cellular {
         this._tileKernel = metric === METRIC_MANHATTAN ? _tileableCell2Manhattan
                          : metric === METRIC_CHEBYSHEV ? _tileableCell2Chebyshev
                          : _tileableCell2Euclid;
+        // Bind the matching 3D pair once too (0007), metric-selected exactly as the
+        // 2D pair above -- the per-query 27-cell scan is one indirect call off the
+        // loop, and the 2D binding is byte-unchanged. NO dimension parameter: 2D and
+        // 3D are separate inlined kernel families (0007 Decision 3).
+        this._kernel3 = metric === METRIC_MANHATTAN ? _cellular3Manhattan
+                      : metric === METRIC_CHEBYSHEV ? _cellular3Chebyshev
+                      : _cellular3Euclid;
+        this._tileKernel3 = metric === METRIC_MANHATTAN ? _tileableCell3Manhattan
+                          : metric === METRIC_CHEBYSHEV ? _tileableCell3Chebyshev
+                          : _tileableCell3Euclid;
         // The instance's only owned allocation: one reused out-struct (0003). No
         // permutation table -- cellular scatters one point per cell on demand.
         this._out = { f1: 0, f2: 0, id: 0 };
@@ -430,7 +713,8 @@ export class Cellular {
      *               `'cracks'`), or `'f2'` (soft cells); default `'f1'`. Decoded to a
      *               small-int selector ONCE before the loop; unknown throws (0005).
      *   - `jitter`  override the instance jitter for this bake; default the
-     *               instance's jitter.
+     *               instance's jitter. Bounds-validated like the constructor -- a
+     *               value outside `[0, 1]` (or non-finite / non-number) throws.
      *   - `ox`,`oy` world-space origin; default `0`.
      *   - `normalize` opt-in in-place remap to `[0,1]` (two-pass min/max, no temp
      *               buffer; a constant field maps to all-zero -- no divide-by-zero);
@@ -476,12 +760,24 @@ export class Cellular {
         // undefined, null, or an object.
         const scale     = opts?.scale     ?? 0.01;
         const combo     = opts?.combo     ?? 'f1';
-        const jitter    = opts?.jitter    ?? this._jitter;
         const ox        = opts?.ox        ?? 0;
         const oy        = opts?.oy        ?? 0;
         const normalize = opts?.normalize ?? false;
         const periodX   = opts?.periodX;
         const periodY   = opts?.periodY;
+
+        // The jitter override is bounds-validated at SETUP, mirroring the constructor
+        // guard (fail closed: NaN, Infinity, out-of-[0,1], null, and non-numbers all
+        // throw -- null is not the instance default). Omitted -> the instance's own
+        // already-validated jitter, no throw. Off the loop, like combo/dst/w-h.
+        let jitter = this._jitter;
+        if (opts && opts.jitter !== undefined) {
+            jitter = opts.jitter;
+            if (typeof jitter !== 'number' || !Number.isFinite(jitter) || jitter < 0 || jitter > 1) {
+                throw new Error(
+                    'lite-cellular: jitter must be a finite number in [0, 1] (got ' + String(jitter) + ')');
+            }
+        }
 
         // Decode combo ONCE (0005 Decision 2). The loop branches on `sel`, never the
         // string.
@@ -538,6 +834,212 @@ export class Cellular {
         // Optional exact-[0,1] remap: two in-place scalar-tracking passes, no temp
         // buffer; a constant field (range 0) maps to all-zero, never a 0/0 divide
         // (0005 Decision 4, identical to lite-noise `_fillField2`).
+        if (normalize) {
+            let mn = Infinity, mx = -Infinity;
+            for (let i = 0; i < need; i++) {
+                const v = dst[i];
+                if (v < mn) mn = v;
+                if (v > mx) mx = v;
+            }
+            const range = mx - mn;
+            const inv = range > 0 ? 1 / range : 0;
+            for (let i = 0; i < need; i++) dst[i] = (dst[i] - mn) * inv;
+        }
+
+        return dst;
+    }
+
+    /**
+     * Sample the 3D field at (x, y, z). Returns `{ f1, f2, id }`: the nearest and
+     * second feature-point distances (in this instance's metric) and the F1 owner's
+     * cell id -- the 2D shape plus depth. A verbatim lift of `cellular2` to the
+     * 3x3x3 = 27-cell neighbourhood (0007); ~3x the per-query cost by cell count,
+     * same zero-alloc shape. Instance-only (there is no module 3D surface, 0007).
+     *
+     * `out` is optional; if passed its `f1`/`f2`/`id` are written in place and it is
+     * returned, else the instance's OWN reused out-struct is returned. No allocation
+     * either way. Throws on non-finite `x`, `y`, or `z`.
+     *
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {{ f1: number, f2: number, id: number }} [out]
+     * @returns {{ f1: number, f2: number, id: number }}
+     */
+    cellular3(x, y, z, out) {
+        return this._kernel3(this._seed, this._jitter, x, y, z, out || this._out);
+    }
+
+    /**
+     * Sample the EXACTLY-TILEABLE 3D field at (x, y, z) with a tile of `periodX` x
+     * `periodY` x `periodZ` CELLS. Identical to `cellular3` except each neighbour's
+     * integer cell coordinate is reduced modulo its period before hashing, so the
+     * volume is bit-identically periodic on all three axes (`f1`/`f2`/`id` at `x` and
+     * `x + periodX` are `===`, not merely close) and seamless by construction. The
+     * 0006 wrap lifted to R^3 (0007).
+     *
+     * `periodX`/`periodY`/`periodZ` are REQUIRED positive integers; `0`, negatives,
+     * non-integers, `NaN`, and `Infinity` throw (fail closed -- 0006 Decision 3).
+     * Writes into `out` if given (and returns it), else the reused struct. Zero
+     * allocation. Throws on non-finite `x`, `y`, or `z`.
+     *
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} periodX  tile width in cells; positive integer.
+     * @param {number} periodY  tile height in cells; positive integer.
+     * @param {number} periodZ  tile depth in cells; positive integer.
+     * @param {{ f1: number, f2: number, id: number }} [out]
+     * @returns {{ f1: number, f2: number, id: number }}
+     */
+    tileableCell3(x, y, z, periodX, periodY, periodZ, out) {
+        if (!Number.isInteger(periodX) || periodX < 1 || !Number.isInteger(periodY) || periodY < 1 ||
+            !Number.isInteger(periodZ) || periodZ < 1) {
+            throw new Error(
+                'lite-cellular: tileableCell3 requires positive integer periodX, periodY and periodZ (got ' +
+                String(periodX) + ', ' + String(periodY) + ', ' + String(periodZ) + ')');
+        }
+        return this._tileKernel3(this._seed, this._jitter, periodX, periodY, periodZ, x, y, z, out || this._out);
+    }
+
+    /**
+     * Bake a whole `w` x `h` x `d` cellular VOLUME into a caller-owned typed array,
+     * row-major with z the outermost axis (`idx = (z*h + y)*w + x`), allocation-free.
+     * 0005's baker lifted to 3D (0007). The baker OWNS NOTHING: it validates `dst`
+     * and writes `w*h*d` values into it, returning `dst`.
+     *
+     * `opts` (all optional, guarded so the omitted-opts path allocates nothing):
+     *   - `scale`   coord step per voxel on every axis (`px += scale`); default `0.01`.
+     *   - `combo`   `'f1'` / `'f2-f1'` (alias `'cracks'`) / `'f2'`; default `'f1'`.
+     *               Decoded to a small-int selector ONCE before the loop; unknown throws.
+     *   - `jitter`  override the instance jitter for this bake; default the instance's.
+     *               Bounds-validated like the constructor -- outside `[0, 1]` throws.
+     *   - `ox`,`oy`,`oz` world-space origin; default `0`.
+     *   - `normalize` opt-in in-place remap to `[0,1]` (two-pass min/max, no temp
+     *               buffer; a constant volume maps to all-zero); default `false`.
+     *   - `periodX`,`periodY`,`periodZ` set ALL THREE (positive integers) to bake a
+     *               seamless tile (pick `scale = periodX / w`); omit all for a plain
+     *               volume. A partial/invalid period throws.
+     *
+     * Fail closed: `w`/`h`/`d` must be positive integers and `dst` a typed array with
+     * `length >= w*h*d`, else throw. Metric bound once (0001), combo a small-int
+     * select, one reused scratch struct -- zero allocation once options are read.
+     *
+     * @param {Float64Array | Float32Array} dst  caller-owned, length `>= w*h*d`.
+     * @param {number} w  positive integer width.
+     * @param {number} h  positive integer height.
+     * @param {number} d  positive integer depth.
+     * @param {{ scale?: number, combo?: string, jitter?: number, ox?: number,
+     *          oy?: number, oz?: number, normalize?: boolean, periodX?: number,
+     *          periodY?: number, periodZ?: number }} [opts]
+     * @returns {Float64Array | Float32Array} `dst`.
+     */
+    fillCellField3(dst, w, h, d, opts) {
+        // Fail closed at SETUP, before dst is touched (0005 Decision 1).
+        if (!Number.isInteger(w) || w < 1 || !Number.isInteger(h) || h < 1 ||
+            !Number.isInteger(d) || d < 1) {
+            throw new Error(
+                'lite-cellular: fillCellField3 requires positive integer w, h and d (got ' +
+                String(w) + ', ' + String(h) + ', ' + String(d) + ')');
+        }
+        if (!ArrayBuffer.isView(dst) || typeof dst.BYTES_PER_ELEMENT !== 'number' ||
+            typeof dst.length !== 'number') {
+            throw new Error(
+                'lite-cellular: fillCellField3 requires a typed-array dst (Float64Array or Float32Array)');
+        }
+        const need = w * h * d;
+        if (dst.length < need) {
+            throw new Error(
+                'lite-cellular: fillCellField3 dst too small -- length ' + dst.length +
+                ' < w*h*d ' + need + ' (fail closed, no short write)');
+        }
+
+        // Guarded reads -- no `opts = {}` (0005). Zero-alloc whether opts is
+        // undefined, null, or an object.
+        const scale     = opts?.scale     ?? 0.01;
+        const combo     = opts?.combo     ?? 'f1';
+        const ox        = opts?.ox        ?? 0;
+        const oy        = opts?.oy        ?? 0;
+        const oz        = opts?.oz        ?? 0;
+        const normalize = opts?.normalize ?? false;
+        const periodX   = opts?.periodX;
+        const periodY   = opts?.periodY;
+        const periodZ   = opts?.periodZ;
+
+        // The jitter override is bounds-validated at SETUP, mirroring the constructor
+        // guard (fail closed: NaN, Infinity, out-of-[0,1], null, and non-numbers all
+        // throw -- null is not the instance default). Omitted -> the instance's own
+        // already-validated jitter, no throw. Off the loop, like combo/dst/w-h-d.
+        let jitter = this._jitter;
+        if (opts && opts.jitter !== undefined) {
+            jitter = opts.jitter;
+            if (typeof jitter !== 'number' || !Number.isFinite(jitter) || jitter < 0 || jitter > 1) {
+                throw new Error(
+                    'lite-cellular: jitter must be a finite number in [0, 1] (got ' + String(jitter) + ')');
+            }
+        }
+
+        // Decode combo ONCE (0005 Decision 2). The loop branches on `sel`, never the string.
+        const sel = _COMBO[combo];
+        if (sel === undefined) {
+            throw new RangeError(
+                "lite-cellular: fillCellField3 unknown combo '" + combo +
+                "' -- expected 'f1', 'f2-f1' (alias 'cracks'), or 'f2'");
+        }
+
+        // Select the kernel ONCE (0005 Decision 3 / 0006): tiling iff a period is
+        // given; ALL THREE periods required + positive integer, else throw.
+        const tiling = periodX !== undefined || periodY !== undefined || periodZ !== undefined;
+        if (tiling && (!Number.isInteger(periodX) || periodX < 1 ||
+                       !Number.isInteger(periodY) || periodY < 1 ||
+                       !Number.isInteger(periodZ) || periodZ < 1)) {
+            throw new Error(
+                'lite-cellular: fillCellField3 tiling requires positive integer periodX, periodY and periodZ (got ' +
+                String(periodX) + ', ' + String(periodY) + ', ' + String(periodZ) + ')');
+        }
+
+        const seed = this._seed;
+        const s = this._out;   // one reused scratch out-struct -- never a per-voxel object
+        let idx = 0;
+
+        // Two monomorphic loop variants, chosen once. The only per-voxel work is one
+        // kernel call, one `sel` select on two locals, one `dst[idx++]` write.
+        if (tiling) {
+            const tk = this._tileKernel3;
+            let pz = oz;
+            for (let zz = 0; zz < d; zz++) {
+                let py = oy;
+                for (let y = 0; y < h; y++) {
+                    let px = ox;
+                    for (let x = 0; x < w; x++) {
+                        tk(seed, jitter, periodX, periodY, periodZ, px, py, pz, s);
+                        dst[idx++] = sel === 0 ? s.f1 : sel === 1 ? s.f2 - s.f1 : s.f2;
+                        px += scale;
+                    }
+                    py += scale;
+                }
+                pz += scale;
+            }
+        } else {
+            const k = this._kernel3;
+            let pz = oz;
+            for (let zz = 0; zz < d; zz++) {
+                let py = oy;
+                for (let y = 0; y < h; y++) {
+                    let px = ox;
+                    for (let x = 0; x < w; x++) {
+                        k(seed, jitter, px, py, pz, s);
+                        dst[idx++] = sel === 0 ? s.f1 : sel === 1 ? s.f2 - s.f1 : s.f2;
+                        px += scale;
+                    }
+                    py += scale;
+                }
+                pz += scale;
+            }
+        }
+
+        // Optional exact-[0,1] remap: two in-place passes, no temp buffer; a constant
+        // volume (range 0) maps to all-zero, never a 0/0 divide (0005 Decision 4).
         if (normalize) {
             let mn = Infinity, mx = -Infinity;
             for (let i = 0; i < need; i++) {

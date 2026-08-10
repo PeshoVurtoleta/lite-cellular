@@ -1,14 +1,15 @@
 # @zakkster/lite-cellular
 
-> Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; v1.1.0 adds the zero-alloc field baker `fillCellField2` and the EXACTLY-seamless `tileableCell2`. Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
+> Zero-GC Worley/cellular noise for 2D and 3D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; v1.1.0 adds the zero-alloc field baker `fillCellField2` and the EXACTLY-seamless `tileableCell2`; v1.2.0 LIFTS the whole surface into 3D (`cellular3` / `fillCellField3` / `tileableCell3`, the 27-cell neighbourhood). Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
 
 ## API
 
-Named exports (v1.1.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
-`VERSION`, `METRIC_EUCLIDEAN`, `METRIC_MANHATTAN`, `METRIC_CHEBYSHEV`. The two C2
-methods (`fillCellField2`, `tileableCell2`) are INSTANCE methods -- a bake wants
-metric + jitter control, which is what an instance is for. No module-surface baker or
-tileable, by design.
+Named exports (v1.2.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
+`VERSION`, `METRIC_EUCLIDEAN`, `METRIC_MANHATTAN`, `METRIC_CHEBYSHEV`. The C2 methods
+(`fillCellField2`, `tileableCell2`) and the C3 3D methods (`cellular3`,
+`fillCellField3`, `tileableCell3`) are INSTANCE methods -- a bake wants metric +
+jitter control, which is what an instance is for. No module-surface baker, tileable,
+or 3D surface, by design; no 4D (decisions/0007).
 
 ```ts
 // Distance metric ids. 0 (euclidean, default), 1 (manhattan), 2 (chebyshev).
@@ -56,13 +57,34 @@ class Cellular {
     //   opts (all optional, guarded so the omitted-opts path allocates nothing):
     //     scale = 0.01            coord step per pixel (px += scale)
     //     combo = 'f1'            'f1' | 'f2-f1' (alias 'cracks') | 'f2'; unknown throws
-    //     jitter = <instance>     override the instance jitter for this bake
+    //     jitter = <instance>     override the instance jitter for this bake (bounds-validated
+                            like the constructor -- outside [0,1] / non-finite throws)
     //     ox, oy = 0              world-space origin
     //     normalize = false       opt-in in-place remap to [0,1] (constant -> all-zero)
     //     periodX, periodY        set BOTH (positive ints) for a seamless tile of that
     //                             many cells (0006 wrap; pick scale = periodX / w);
     //                             omit both for a plain field
     fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: object): T;
+
+    // --- 3D (v1.2.0): the 27-cell lift of the three methods above (decisions/0007) ---
+    // Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell scan. Same { f1, f2, id }
+    // shape plus depth, in this instance's metric. ~3x the per-query cost by cell count,
+    // same zero-alloc shape. Writes into `out` if given (returns it) else the reused
+    // struct. THROWS on non-finite x, y, or z. Instance-only (no module 3D surface).
+    cellular3(x: number, y: number, z: number, out?: CellularResult): CellularResult;
+
+    // EXACTLY-tileable 3D sample: cellular3 with each neighbour's INTEGER cell coord
+    // reduced mod its period on ALL THREE axes, so the volume is bit-identically
+    // periodic and seamless BY CONSTRUCTION. periodX/periodY/periodZ are REQUIRED
+    // positive integers (0, negatives, non-integers, NaN, Infinity throw). Zero alloc.
+    tileableCell3(x: number, y: number, z: number, periodX: number, periodY: number, periodZ: number, out?: CellularResult): CellularResult;
+
+    // Bake a w*h*d VOLUME into a caller-owned typed array (length >= w*h*d), row-major
+    // with z outermost (idx = (z*h + y)*w + x), allocation-free; returns dst. combo
+    // decoded once, metric bound once, one reused scratch struct. Fail closed: bad
+    // w/h/d, undersized/non-typed-array dst, unknown combo throw. opts as fillCellField2
+    // plus oz and periodZ (set ALL THREE periods for a seamless tile).
+    fillCellField3<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, d: number, opts?: object): T;
 
     // Re-seed in place. Setup cost only -- not on any hot path. Returns this.
     reseed(seed: number): this;
@@ -119,6 +141,31 @@ step. `@zakkster/lite-patternforge` `seamlessScore` reads genuinely near-zero on
 `@zakkster/lite-noise` `tileableField2` gradient tile scored the same way (~0.024),
 whose lattice wrap carries a small seam-contrast floor. For a seamless bake set
 `periodX`/`periodY` and `scale = periodX / w` so the `w` columns span exactly the tile.
+
+## 3D (v1.2.0)
+
+`cellular3` / `tileableCell3` / `fillCellField3` lift the whole surface into 3D over
+the 3x3x3 = 27-cell neighbourhood -- a verbatim lift of the 2D decisions with the
+coordinate count bumped 2 -> 3 (decisions/0007). Same `{ f1, f2, id }` shape plus
+depth, same three metrics bound once (`cheby <= euclid <= manhattan` holds in R^3 for
+f1 and f2), same jitter/id/combo rules, and the same EXACT integer-cell tile wrap now
+on all three axes. The feature point of a 3D cell scatters via three decorrelated hash
+draws (u, v, w). Cost is ~3x the 2D per-query work by cell count (27/9); `cellular3`
+euclidean ~4.8 Mops/s against the 2D ~14.3, with `bytesPerCall: 0` on every 3D surface
+(proven by torture T6, incl. `maxArrayBuffersGrowth: 0` and a `dst.buffer.byteLength`
+assert on the volume bake). The 2D surface is byte-unchanged (all three 2D goldens
+re-derive). Instance-only: no module 3D surface, and no 4D ever (out of scope
+permanently). `fillCellField3` writes the volume row-major with z outermost
+(`idx = (z*h + y)*w + x`); the volumetric use cases are 3D caustics, voxel terrain
+masks, animated 2D-over-time (a slab per frame), and marble solids.
+
+```js
+import { createCellular } from '@zakkster/lite-cellular';
+const cell = createCellular(42);
+const r = cell.cellular3(3.5, 7.25, 1.5);   // { f1, f2, id }, zero-alloc
+const vol = new Float64Array(32 * 32 * 32);
+cell.fillCellField3(vol, 32, 32, 32, { combo: 'f2-f1', scale: 0.05 });
+```
 
 ## Install
 

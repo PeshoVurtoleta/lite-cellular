@@ -1,6 +1,8 @@
 # 0007 -- 3D is a fast-follow lift, not a core feature, not a generic N-D kernel (C3, v1.2.0)
 
-Status: accepted (design-locked ahead of C3), 2026-08-06.
+Status: accepted, 2026-08-09. Implemented in v1.2.0 (C3); the three 3D goldens pin
+  the exact hashes and each metric's distance line, and the Measured table below is
+  filled from the built 3D kernels.
 Anchor: D-07 (ROADMAP.md section 2)
 Owner: C3
 Depends on: 0001..0006 -- 3D lifts ALL of them to the 27-cell neighbourhood
@@ -98,10 +100,27 @@ path is entirely untouched. T6 gates all 3D surfaces incl. `maxArrayBuffersGrowt
 
 ## Measured
 
-Greenfield: no before. Contract is the alloc gate on every 3D surface
-(`bytesPerOp: 0`, `maxArrayBuffersGrowth: 0`). Expect ~3x the per-query cost of the
-2D kernel by cell count; the C3 build fills a `cellular3`/`fillCellField3` table at
-ship, and C4 consolidates it into `bench/BASELINE.md`. No number is guessed here.
+Greenfield: no before. The binding contract is the alloc gate on every 3D surface
+(`maxBytesPerCall: 0` via `measureAllocs` + `maxArrayBuffersGrowth: 0`; the design
+lock's `bytesPerOp: 0` shorthand is not a real profiler rule) -- proven in torture T6
+across `cellular3`/`tileableCell3`/`fillCellField3`, plain and tiling, each combo,
+plus the `dst.buffer.byteLength` assert. Measured at v1.2.0 (best-of-5, node v26.3.1,
+Apple Silicon; throughput is INDICATIVE, the alloc gate is the contract):
+
+| probe | Mops/s | bytesPerCall |
+| --- | --- | --- |
+| `cellular3` euclidean | ~4.8 | 0 |
+| `cellular3` manhattan | ~4.1 | 0 |
+| `cellular3` chebyshev | ~4.0 | 0 |
+| `tileableCell3` euclidean (8x8x8) | ~4.2 | 0 |
+| `fillCellField3` plain (24^3, per combo) | ~11.6 Mvoxel/s | 0 |
+| `fillCellField3` tiling (24^3, per combo) | ~5.4 Mvoxel/s | 0 |
+
+The prediction held: `cellular3` euclidean at ~4.8 Mops/s against the 2D kernel's
+~14.3 is a 3.0x ratio -- exactly the 27/9 cell-count ratio, the "~3x the per-query
+work" this record forecast, with no per-query allocation. The 3D goldens are
+`euclidean3` `7bac7c6f`, `manhattan3` `f1b621b5`, `chebyshev3` `1682d095`. See
+`bench/BASELINE.md`.
 
 ## Consequences
 

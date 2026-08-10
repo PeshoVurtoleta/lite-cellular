@@ -1,11 +1,14 @@
 /**
- * @zakkster/lite-cellular v1.1.0 -- hand-written types (no drift).
+ * @zakkster/lite-cellular v1.2.0 -- hand-written types (no drift).
  *
  * v1.0.0 (C1) opens the three distance metrics (euclidean/manhattan/chebyshev),
  * fixed at instance creation via an integer id, and adds the module free-function
  * surface (`cellular2`, `seedCellular`). v1.1.0 (C2) adds the two instance methods
  * `fillCellField2` (zero-alloc field bake, combo resolved once -- decisions/0005) and
- * `tileableCell2` (exact integer-cell wrap -- decisions/0006). `cellular3` in C3.
+ * `tileableCell2` (exact integer-cell wrap -- decisions/0006). v1.2.0 (C3) LIFTS the
+ * whole surface into 3D -- `cellular3`, `fillCellField3`, `tileableCell3`, over the
+ * 3x3x3 = 27-cell neighbourhood, a verbatim lift of 0001..0006 (decisions/0007).
+ * Instance-only; there is no module 3D surface and no 4D.
  *
  * @license MIT
  */
@@ -59,7 +62,7 @@ export interface FillCellFieldOptions {
      * before the loop; an unknown value throws (`decisions/0005`).
      */
     combo?: 'f1' | 'f2-f1' | 'cracks' | 'f2';
-    /** Override the instance jitter for this bake. Default the instance's jitter. */
+    /** Override the instance jitter for this bake. Default the instance's jitter. Bounds-validated like the constructor -- outside [0,1] (or non-finite/non-number) throws. */
     jitter?: number;
     /** World-space origin x. Default `0`. */
     ox?: number;
@@ -77,6 +80,42 @@ export interface FillCellFieldOptions {
      */
     periodX?: number;
     periodY?: number;
+}
+
+/**
+ * Options for `fillCellField3` (all optional, guarded so the omitted-opts path
+ * allocates nothing). The 3D lift of `FillCellFieldOptions` (`decisions/0005`/`0007`).
+ */
+export interface FillCellField3Options {
+    /** Coord step per voxel on every axis (`px += scale`). Default `0.01`. */
+    scale?: number;
+    /**
+     * Which texture to store: `'f1'` (blobs), `'f2-f1'` (cracks, alias `'cracks'`),
+     * or `'f2'` (soft cells). Default `'f1'`. Decoded to a small-int selector ONCE
+     * before the loop; an unknown value throws (`decisions/0005`).
+     */
+    combo?: 'f1' | 'f2-f1' | 'cracks' | 'f2';
+    /** Override the instance jitter for this bake. Default the instance's jitter. Bounds-validated like the constructor -- outside [0,1] (or non-finite/non-number) throws. */
+    jitter?: number;
+    /** World-space origin x. Default `0`. */
+    ox?: number;
+    /** World-space origin y. Default `0`. */
+    oy?: number;
+    /** World-space origin z. Default `0`. */
+    oz?: number;
+    /**
+     * Opt-in in-place remap to `[0,1]` (two-pass min/max, no temp buffer; a constant
+     * volume maps to all-zero). Default `false`.
+     */
+    normalize?: boolean;
+    /**
+     * Set ALL THREE (positive integers) to bake a seamless tile of this many cells
+     * (the `decisions/0006` integer-cell wrap on all three axes -- pick
+     * `scale = periodX/w`). Omit all for a plain volume. A partial/invalid period throws.
+     */
+    periodX?: number;
+    periodY?: number;
+    periodZ?: number;
 }
 
 /** Construction options. metric and jitter are fixed at creation and immutable. */
@@ -130,6 +169,39 @@ export declare class Cellular {
      */
     fillCellField2<T extends Float64Array | Float32Array>(
         dst: T, w: number, h: number, opts?: FillCellFieldOptions): T;
+
+    /**
+     * Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell lift of `cellular2`
+     * (`decisions/0007`). Returns `{ f1, f2, id }` -- the 2D shape plus depth -- in
+     * this instance's metric. Writes into `out` if given (and returns it), else the
+     * reused struct. Zero allocation. THROWS on non-finite `x`, `y`, or `z`.
+     * Instance-only: there is no module 3D surface (0007 Decision 4).
+     */
+    cellular3(x: number, y: number, z: number, out?: CellularResult): CellularResult;
+
+    /**
+     * Sample the EXACTLY-TILEABLE 3D field: `cellular3` with each neighbour's integer
+     * cell coordinate reduced mod its period on all three axes, so the volume is
+     * bit-identically periodic and seamless by construction (`decisions/0006`/`0007`).
+     * `periodX`/`periodY`/`periodZ` are REQUIRED positive integers (`0`, negatives,
+     * non-integers, `NaN`, `Infinity` throw). Writes into `out` if given (and returns
+     * it), else the reused struct. Zero allocation. THROWS on non-finite coords.
+     */
+    tileableCell3(
+        x: number, y: number, z: number,
+        periodX: number, periodY: number, periodZ: number, out?: CellularResult): CellularResult;
+
+    /**
+     * Bake a `w` x `h` x `d` cellular VOLUME into a caller-owned typed array `dst`
+     * (Float64Array or Float32Array, length `>= w*h*d`), row-major with z outermost
+     * (`idx = (z*h + y)*w + x`), allocation-free, returning `dst`. The 3D lift of
+     * `fillCellField2` (`decisions/0005`/`0007`): combo decoded once, metric bound
+     * once. With `opts.periodX`/`periodY`/`periodZ` set the bake is a seamless tile.
+     * Fail closed: non-positive-integer `w`/`h`/`d`, an undersized or non-typed-array
+     * `dst`, and an unknown `combo` each throw.
+     */
+    fillCellField3<T extends Float64Array | Float32Array>(
+        dst: T, w: number, h: number, d: number, opts?: FillCellField3Options): T;
 
     /** Re-seed this instance in place. Returns `this`. Setup cost only. */
     reseed(seed: number): this;

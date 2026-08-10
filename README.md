@@ -1,6 +1,6 @@
 # @zakkster/lite-cellular
 
-> Zero-GC Worley/cellular noise for 2D -- `f1`/`f2` feature-point distances and a per-region `id`, written into a caller-owned out-struct, no allocation on the query path.
+> Zero-GC Worley/cellular noise for 2D and 3D -- `f1`/`f2` feature-point distances and a per-region `id`, written into a caller-owned out-struct, no allocation on the query path.
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-cellular.svg)](https://www.npmjs.com/package/@zakkster/lite-cellular)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
@@ -14,7 +14,7 @@
 [![types](https://img.shields.io/badge/types-included-blue.svg)](./Cellular.d.ts)
 [![node](https://img.shields.io/badge/node-%3E%3D18-339933.svg)](./package.json)
 [![single file](https://img.shields.io/badge/source-single%20file-informational.svg)](./Cellular.js)
-[![status](https://img.shields.io/badge/status-v1.1.0-brightgreen.svg)](./CHANGELOG.md)
+[![status](https://img.shields.io/badge/status-v1.2.0-brightgreen.svg)](./CHANGELOG.md)
 [![tests](https://img.shields.io/badge/torture-node%20--expose--gc-success.svg)](#testing)
 
 ## The cellular half the noise ecosystem was missing
@@ -139,6 +139,19 @@ class Cellular {
   // allocation-free; returns dst. combo resolved once; optional normalize; set
   // periodX/periodY for a seamless tile. Fail closed on bad dst/w/h/combo. See 0005.
   fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: FillCellFieldOptions): T;
+
+  // --- 3D (v1.2.0): the 27-cell lift of the three methods above. See decisions/0007.
+  // Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell scan. Same {f1,f2,id} shape,
+  // ~3x the per-query cost by cell count, same zero-alloc shape. Throws on non-finite x/y/z.
+  cellular3(x: number, y: number, z: number, out?: CellularResult): CellularResult;
+  // Exactly-tileable 3D sample: cellular3 with the integer cell coords wrapped mod the
+  // period on ALL THREE axes. periodX/periodY/periodZ are required positive integers.
+  // Seamless by construction. Zero allocation.
+  tileableCell3(x: number, y: number, z: number, periodX: number, periodY: number, periodZ: number, out?: CellularResult): CellularResult;
+  // Bake a w*h*d VOLUME into a caller-owned typed array (length >= w*h*d), row-major
+  // with z outermost, allocation-free; returns dst. combo resolved once; optional
+  // normalize; set periodX/periodY/periodZ for a seamless tile. Fail closed.
+  fillCellField3<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, d: number, opts?: FillCellField3Options): T;
   // Re-seed in place. Setup only. Returns this.
   reseed(seed: number): this;
 }
@@ -152,6 +165,15 @@ interface FillCellFieldOptions {
   periodX?: number; periodY?: number;           // set BOTH (positive ints) for a seamless tile
 }
 
+interface FillCellField3Options {               // fillCellField3 (v1.2.0): as above, plus depth
+  scale?: number;                               // coord step per voxel on every axis; default 0.01
+  combo?: 'f1' | 'f2-f1' | 'cracks' | 'f2';     // which texture; default 'f1'; unknown throws
+  jitter?: number;                              // override instance jitter for this bake
+  ox?: number; oy?: number; oz?: number;        // world-space origin; default 0
+  normalize?: boolean;                          // opt-in in-place remap to [0,1]; default false
+  periodX?: number; periodY?: number; periodZ?: number; // set ALL THREE for a seamless tile
+}
+
 // Module free surface: euclidean, jitter 1, shared module seed. Zero-config.
 function cellular2(x: number, y: number, out?: CellularResult): CellularResult;
 // Re-seed the shared module field. Warns once in dev on a 2nd call; silent in prod.
@@ -162,7 +184,7 @@ function seedCellular(seed?: number): void;
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `VERSION` | `'1.1.0'` | In lockstep with `package.json` + `llms.txt` (three-place sync). |
+| `VERSION` | `'1.2.0'` | In lockstep with `package.json` + `llms.txt` (three-place sync). |
 | `METRIC_EUCLIDEAN` | `0` | L2, `sqrt(dx*dx + dy*dy)`. The default. |
 | `METRIC_MANHATTAN` | `1` | L1, `|dx| + |dy|`. Diamond cells. |
 | `METRIC_CHEBYSHEV` | `2` | Linf, `max(|dx|, |dy|)`. Square cells. |
@@ -278,6 +300,41 @@ const tile = new Float64Array(W * W);
 createCellular(42).fillCellField2(tile, W, W, { combo: 'f1', scale: P / W, periodX: P, periodY: P });
 ```
 
+## 3D -- the same surface, in a volume
+
+v1.2.0 lifts the whole 2D surface into 3D over the **3x3x3 = 27-cell** neighbourhood.
+`cellular3(x, y, z)`, `tileableCell3(x, y, z, periodX, periodY, periodZ)`, and
+`fillCellField3(dst, w, h, d, opts)` are a **verbatim lift** of the 2D methods -- the
+same `{f1,f2,id}` shape, the same three metrics bound once, the same jitter and `id`
+rules, the same combo convention, and the same EXACT integer-cell tile wrap (now on all
+three axes). Nothing is new design; the volumetric use cases are 3D caustics, voxel
+terrain masks, animated 2D-over-time (bake a slab per frame), and marble solids.
+
+It costs what the cell count says: 27 cells is ~3x the 9-cell 2D work, and `cellular3`
+euclidean measures ~4.8 Mops/s against the 2D ~14.3 -- a 3.0x ratio -- with **zero
+allocation on the query path**, proven by the same torture T6 gate as 2D (incl.
+`maxArrayBuffersGrowth: 0` and a `dst.buffer.byteLength` assert on the volume bake).
+
+```js
+import { createCellular, METRIC_EUCLIDEAN } from '@zakkster/lite-cellular';
+
+const cell = createCellular(42, { metric: METRIC_EUCLIDEAN });
+const out = { f1: 0, f2: 0, id: 0 };
+cell.cellular3(3.5, 7.25, 1.5, out);            // { f1, f2, id }, zero-alloc
+
+// Bake a whole volume (z outermost: idx = (z*h + y)*w + x), allocation-free:
+const w = 32, h = 32, d = 32;
+const vol = new Float64Array(w * h * d);
+cell.fillCellField3(vol, w, h, d, { combo: 'f2-f1', scale: 0.05 });
+
+// A seamless 3D tile -- exact on all three axes, set all three periods:
+cell.fillCellField3(vol, w, h, d, { combo: 'f1', scale: 4 / w, periodX: 4, periodY: 4, periodZ: 4 });
+```
+
+3D is **instance-only** (a volume wants metric + jitter control), consistent with the
+2D baker. There is deliberately **no module 3D surface and no 4D** -- 81 cells is a
+different cost regime a 3D field plus a time offset already serves (`decisions/0007`).
+
 <details>
 <summary><b>Zero-GC design notes</b> -- the allocation table and how it is proven</summary>
 
@@ -288,8 +345,9 @@ Every owned allocation of a `Cellular` instance:
 | the instance object + its scalars | `createCellular` | no |
 | one reused out-struct `{ f1, f2, id }` | `createCellular` | no (reused) |
 | (no permutation table) | -- | cellular scatters on demand |
-| the query itself | `cellular2` / `tileableCell2` | **0 bytes** |
+| the query itself | `cellular2` / `tileableCell2` / `cellular3` / `tileableCell3` | **0 bytes** |
 | a whole `w*h` field bake | `fillCellField2` | **0 bytes** (writes caller-owned `dst`) |
+| a whole `w*h*d` volume bake | `fillCellField3` | **0 bytes** (writes caller-owned `dst`) |
 
 `fillCellField2` is the case the `maxArrayBuffersGrowth: 0` gate exists for: `dst` is
 an ArrayBuffer-backed store the V8-heap gate is blind to, so torture T6 also asserts
@@ -392,11 +450,11 @@ raw-cell-hash tiling kernel that is not exactly periodic).
 - **Not a flow-field source.** `f1` has derivative discontinuities at cell
   boundaries by construction; it cannot feed an analytic curl/flow field.
 - **Not cryptographic.** The hash is for reproducible scatter, not security.
-- **Not 3D (yet).** `cellular3` / `fillCellField3` -- the 27-cell scan -- land in
-  v1.2.0 (C3). The 2D field baker (`fillCellField2`) and the exact tileable wrap
-  (`tileableCell2`) shipped in v1.1.0. `combo` lives ONLY in the bake, never per query.
-- **Not precise past ~2^52.** Beyond the float64 integer limit the 3x3
-  neighbourhood degenerates (the pinned v1.0.0 world-scale limit).
+- **Not 4D, ever.** 2D (9-cell) and 3D (27-cell) ship; 4D (81 cells) is a different
+  cost regime a 3D field plus a time offset already serves -- permanently out of scope
+  (`decisions/0007`). `combo` lives ONLY in the bake, never per query.
+- **Not precise past ~2^52.** Beyond the float64 integer limit the neighbourhood
+  degenerates (the pinned world-scale limit) -- per axis, in 2D and 3D alike.
 
 ## Ecosystem
 

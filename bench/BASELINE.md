@@ -1,4 +1,4 @@
-# lite-cellular -- bench baseline (v1.1.0, C2)
+# lite-cellular -- bench baseline (v1.2.0, C3)
 
 C4 consolidates the full baseline; this is the running seed.
 
@@ -36,6 +36,37 @@ an EXACT seam.
 | `fillCellField2` f1 (tiling) | ~5800 | ~24 | 0 |
 | `fillCellField2` f2-f1 (tiling) | ~6000 | ~24 | 0 |
 | `fillCellField2` f2 (tiling) | ~6000 | ~24 | 0 |
+
+## 3D per-query surface (C3) -- the 27-cell lift
+
+The 3x3x3 = 27-cell scan is ~3x the per-query work of the 9-cell 2D kernel by cell
+count, and measures right there: `cellular3` euclidean ~4.8 Mops/s against the 2D
+~14.3 (a 3.0x ratio, exactly the cell-count ratio). Same zero-alloc shape --
+`bytesPerCall: 0` on every 3D probe is the contract; the 2D surface is byte-unchanged.
+
+| probe | Mops/s (best-of-5, indicative) | bytesPerCall (contract) |
+| --- | --- | --- |
+| `cellular3` euclidean (scattered coords) | ~4.8 | 0 |
+| `cellular3` manhattan | ~4.1 | 0 |
+| `cellular3` chebyshev | ~4.0 | 0 |
+| `tileableCell3` euclidean (period 8x8x8) | ~4.2 | 0 |
+
+## 3D volume bake (C3) -- one op = one 24x24x24 volume (13824 voxels)
+
+Volumes/sec is indicative; `bytesPerCall: 0` (per-bake retained bytes) is the C3
+contract, alongside the whole-window `maxArrayBuffersGrowth: 0` proven in torture T6
+(`dst` is ArrayBuffer-backed, invisible to the V8-heap gate). The tiling bake runs at
+~half the plain rate: the three integer `_wrap` reductions per neighbour are the cost
+of an EXACT seam on all three axes.
+
+| probe | volumes/sec (best-of-5) | ~Mvoxel/s | bytesPerCall (contract) |
+| --- | --- | --- | --- |
+| `fillCellField3` f1 (plain) | ~840 | ~11.6 | 0 |
+| `fillCellField3` f2-f1 (plain) | ~840 | ~11.6 | 0 |
+| `fillCellField3` f2 (plain) | ~840 | ~11.6 | 0 |
+| `fillCellField3` f1 (tiling) | ~390 | ~5.4 | 0 |
+| `fillCellField3` f2-f1 (tiling) | ~395 | ~5.5 | 0 |
+| `fillCellField3` f2 (tiling) | ~395 | ~5.5 | 0 |
 
 ## Seam proof (C2, torture T8 / examples/seamless-tile.mjs)
 

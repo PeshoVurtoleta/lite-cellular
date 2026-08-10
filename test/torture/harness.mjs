@@ -70,6 +70,17 @@ export const BREAK_COMBOPARSE = process.env.CELLULAR_TORTURE_BREAK_COMBOPARSE ==
 export const BREAK_FLOATWRAP = process.env.CELLULAR_TORTURE_BREAK_FLOATWRAP === '1';
 
 /**
+ * C3 (3D) break controls (each makes the whole run exit non-zero):
+ *   - BREAK_ALLOC3    : T6 gates a `cellular3` that allocates a retained per-query
+ *                       out-struct -- the zero-retention gate must reject it (0007).
+ *   - BREAK_FLOATWRAP3: T0 runs the 3D exact-periodicity law against a kernel that
+ *                       hashes the UNWRAPPED integer cell (the 0006 float-coord
+ *                       anti-pattern, in R^3) -- periodicity must break.
+ */
+export const BREAK_ALLOC3 = process.env.CELLULAR_TORTURE_BREAK_ALLOC3 === '1';
+export const BREAK_FLOATWRAP3 = process.env.CELLULAR_TORTURE_BREAK_FLOATWRAP3 === '1';
+
+/**
  * Whole-window zero-GC rules. maxArrayBuffersGrowth needs measureOps
  * `stabilize:'deep'` (ArrayBuffer backing stores live outside the V8 heap).
  */
@@ -95,6 +106,17 @@ export const SAMPLE_CHEB = createCellular(SAMPLE_SEED, { metric: METRIC_CHEBYSHE
 
 /** The three sample instances tagged with a human name, for tier loops. */
 export const SAMPLES = [
+    ['euclidean', SAMPLE],
+    ['manhattan', SAMPLE_MAN],
+    ['chebyshev', SAMPLE_CHEB],
+];
+
+/**
+ * The same three sample instances, reused for the 3D lanes -- the 3D surface is
+ * bound on the SAME instance (0007), so no new instances are needed. Tagged for the
+ * tier loops that exercise `cellular3` / `fillCellField3` / `tileableCell3`.
+ */
+export const SAMPLES3 = [
     ['euclidean', SAMPLE],
     ['manhattan', SAMPLE_MAN],
     ['chebyshev', SAMPLE_CHEB],

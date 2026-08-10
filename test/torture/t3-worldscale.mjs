@@ -154,4 +154,79 @@ export function run() {
         try { inst.fillCellField2(px, 2.5, 1, {}); } catch (e) { dtErr++; }                 // non-integer w
         assertHot(dtErr === 4, () => `T3.bake-guard: only ${dtErr}/4 bad dst/dim throws fired`);
     }
+
+    // --- C3: the world-scale limit applies PER AXIS in 3D (0007) --------------
+    // A large z degenerates the same as a large x: the pinned precise limit holds in
+    // R^3, and the 2^52 cliff collapses the neighbourhood so f1==f2.
+    for (const [name, id] of METRIC_IDS) {
+        const c = createCellular(42, { metric: id, jitter: 1 });
+        const c0 = createCellular(42, { metric: id, jitter: 0 });
+        for (const mag of PRECISE_MAGS) {
+            // Large on the z axis specifically -- the axis the 2D sweep never touched.
+            c.cellular3(0.5, 0.5, mag + 0.5, a);
+            assertHot(Number.isFinite(a.f1) && Number.isFinite(a.f2) && a.f1 < a.f2,
+                () => `T3.3D[${name}].distinct-z: neighbourhood collapse at |z|=${mag} (f1=${a.f1} f2=${a.f2})`);
+            // jitter=0 grid distance still matches the independent nearest-centre, large z.
+            const x = 0.3, y = 0.7, z = mag + 0.3;
+            c0.cellular3(x, y, z, a);
+            const cxc = Math.round(x - 0.5) + 0.5;
+            const cyc = Math.round(y - 0.5) + 0.5;
+            const czc = Math.round(z - 0.5) + 0.5;
+            const ax = Math.abs(cxc - x), ay = Math.abs(cyc - y), az = Math.abs(czc - z);
+            const exp = expected(id, ax, ay) === Math.max(ax, ay) && id === METRIC_CHEBYSHEV
+                ? Math.max(ax, ay, az)
+                : id === METRIC_MANHATTAN ? ax + ay + az
+                : id === METRIC_EUCLIDEAN ? Math.sqrt(ax * ax + ay * ay + az * az)
+                : Math.max(ax, ay, az);
+            assertHot(Math.abs(a.f1 - exp) < 1e-6,
+                () => `T3.3D[${name}].grid-z: f1=${a.f1} != nearest-centre ${exp} at |z|=${mag}`);
+        }
+        // The 2^52 cliff in 3D: finite, no throw, neighbourhood collapsed -> f1==f2.
+        c.cellular3(WORLD_SCALE_DEGENERATE, WORLD_SCALE_DEGENERATE, WORLD_SCALE_DEGENERATE, a);
+        assertHot(Number.isFinite(a.f1) && a.f1 === a.f2,
+            () => `T3.3D[${name}].degenerate: expected f1==f2 at 2^52 (f1=${a.f1} f2=${a.f2}) -- pinned boundary moved`);
+    }
+
+    // C3: extreme periodZ, d=1, and a larger volume bake -- finite, decided, not silent.
+    {
+        const c = createCellular(42, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        c.tileableCell3(0.3, 0.7, 12345.5, 4, 4, 1 << 20, a);
+        assertHot(Number.isFinite(a.f1) && Number.isFinite(a.f2) && a.f1 <= a.f2,
+            () => `T3.3D.tile-hugeZ: non-finite or f1>f2 at a huge periodZ`);
+        // d=1 slab: one z-plane, writes exactly w*h; equals per-query at oz.
+        const slab = new Float64Array(5 * 4);
+        c.fillCellField3(slab, 5, 4, 1, { combo: 'f1', scale: 0.06, ox: 0.3, oy: -0.2, oz: 2.5 });
+        const o = { f1: 0, f2: 0, id: 0 };
+        let idx = 0, py = -0.2;
+        for (let yy = 0; yy < 4; yy++) {
+            let px = 0.3;
+            for (let xx = 0; xx < 5; xx++) {
+                c.cellular3(px, py, 2.5, o);   // pz fixed at oz=2.5 (d=1)
+                assertHot(slab[idx++] === o.f1, () => `T3.3D.bake-d1: slab voxel (${xx},${yy}) != per-query f1`);
+                px += 0.06;
+            }
+            py += 0.06;
+        }
+        // Larger volume: finite everywhere, no throw, buffer intact.
+        const VW = 24, VH = 20, VD = 12;
+        const big = new Float64Array(VW * VH * VD);
+        const before = big.buffer.byteLength;
+        c.fillCellField3(big, VW, VH, VD, { combo: 'f2-f1', scale: 0.03, normalize: true });
+        let ok = true;
+        for (let i = 0; i < big.length; i++) if (!Number.isFinite(big[i]) || big[i] < 0 || big[i] > 1) { ok = false; break; }
+        assertHot(ok, () => `T3.3D.bake-large: a normalized voxel left [0,1] or went non-finite`);
+        assertHot(big.buffer.byteLength === before, () => `T3.3D.bake-large: dst buffer reallocated`);
+        // Fail-closed guards: bad periods, bad dims.
+        let n = 0;
+        for (const [P, Q, R] of [[0, 4, 4], [4, 0, 4], [4, 4, 0], [4, 4, 1.5], [NaN, 4, 4], [4, 4, Infinity]]) {
+            try { c.tileableCell3(0.5, 0.5, 0.5, P, Q, R, a); } catch (e) { n++; }
+        }
+        assertHot(n === 6, () => `T3.3D.tile-guard: only ${n}/6 bad periods threw`);
+        let dErr = 0;
+        try { c.fillCellField3([0, 0], 2, 1, 1, {}); } catch (e) { dErr++; }              // not a typed array
+        try { c.fillCellField3(new Float64Array(2), 2, 2, 2, {}); } catch (e) { dErr++; } // too small
+        try { c.fillCellField3(new Float64Array(8), 2, 2, 0, {}); } catch (e) { dErr++; } // non-positive d
+        try { c.fillCellField3(new Float64Array(8), 2, 2, 1.5, {}); } catch (e) { dErr++; } // non-integer d
+        assertHot(dErr === 4, () => `T3.3D.bake-guard: only ${dErr}/4 bad dst/dim throws fired`);
+    }
 }

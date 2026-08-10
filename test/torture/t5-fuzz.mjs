@@ -219,6 +219,51 @@ export function run() {
         assertHot(eq(before, after),
             () => `T5.bake-module-iso: seedCellular perturbed a tiling bake (seed=${SEED})`);
     }
+
+    // --- C3: 3D instance isolation folds into NS-01; 3D bake reseed-reproducible ---
+
+    // (8) Two instances running 3D surfaces do not cross-contaminate. Snapshot a's 3D
+    // field; sample + reseed b (both 3D); re-sample a -> bit-identical to the snapshot.
+    {
+        const a = createCellular(SEED_A, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const b = createCellular(SEED_B, { metric: METRIC_MANHATTAN, jitter: 1 });
+        const snap = new Float64Array(COORDS.length * 3);
+        for (let i = 0; i < COORDS.length; i++) {
+            a.cellular3(COORDS[i][0], COORDS[i][1], COORDS[i][0] - COORDS[i][1], out);
+            snap[i * 3] = out.f1; snap[i * 3 + 1] = out.f2; snap[i * 3 + 2] = out.id;
+        }
+        for (let i = 0; i < COORDS.length; i++) b.cellular3(COORDS[i][0], COORDS[i][1], COORDS[i][0] - COORDS[i][1], out);
+        b.reseed(SEED_C);
+        for (let i = 0; i < COORDS.length; i++) b.cellular3(COORDS[i][0], COORDS[i][1], COORDS[i][0] - COORDS[i][1], out);
+        for (const sv of [11, 22, 999]) seedCellular(sv);   // module churn must not touch a either
+        for (let i = 0; i < COORDS.length; i++) {
+            a.cellular3(COORDS[i][0], COORDS[i][1], COORDS[i][0] - COORDS[i][1], out);
+            assertHot(out.f1 === snap[i * 3] && out.f2 === snap[i * 3 + 1] && out.id === snap[i * 3 + 2],
+                () => `T5.3D-iso: instance a's 3D field changed after activity on b/module at coord ${i} (seed=${SEED})`);
+        }
+    }
+
+    // (9) A 3D bake is reproducible under reseed: bake; reseed away; reseed back; bake
+    // again -> identical (plain and tiling).
+    {
+        const c = createCellular(SEED_A, { metric: METRIC_CHEBYSHEV, jitter: 1 });
+        const VW = 10, VH = 8, VD = 6, VN = VW * VH * VD;
+        const first = new Float64Array(VN), again = new Float64Array(VN);
+        c.fillCellField3(first, VW, VH, VD, { combo: 'f2-f1', scale: 0.05, ox: 1.5, oy: -2.5, oz: 0.5 });
+        c.reseed(SEED_B);
+        c.fillCellField3(again, VW, VH, VD, { combo: 'f1', scale: 0.05 });
+        c.reseed(SEED_A);
+        c.fillCellField3(again, VW, VH, VD, { combo: 'f2-f1', scale: 0.05, ox: 1.5, oy: -2.5, oz: 0.5 });
+        assertHot(eq(first, again),
+            () => `T5.3D-bake-reseed: a 3D bake was not reproducible after reseed(B) then reseed(A) (seed=${SEED})`);
+        // A tiling 3D bake is independent of the module seed.
+        const before = new Float64Array(VN), after = new Float64Array(VN);
+        c.fillCellField3(before, VW, VH, VD, { combo: 'f2', scale: 4 / VW, periodX: 4, periodY: 4, periodZ: 4 });
+        for (const sv of [7, 88, 555]) seedCellular(sv);
+        c.fillCellField3(after, VW, VH, VD, { combo: 'f2', scale: 4 / VW, periodX: 4, periodY: 4, periodZ: 4 });
+        assertHot(eq(before, after),
+            () => `T5.3D-bake-module-iso: seedCellular perturbed a tiling 3D bake (seed=${SEED})`);
+    }
 }
 
 function streamAlone(sample) {

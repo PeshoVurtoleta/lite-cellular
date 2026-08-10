@@ -59,6 +59,30 @@ export const METRICS = [
     { name: 'chebyshev', id: METRIC_CHEBYSHEV },
 ];
 
+/**
+ * The fixed 3D query corpus (C3): 64 coords spanning cell interiors, exact cell
+ * boundaries (integer coords), sub-cell fractions, negatives straddling the origin,
+ * and large magnitudes, on all three axes. Committed here so every 3D digest is
+ * reproducible from source alone. The SAME corpus is used for all three metrics.
+ */
+export const COORDS3 = [
+    [0, 0, 0], [0.5, 0.5, 0.5], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1], [0.25, 0.75, 0.5], [0.9, 0.1, 0.3],
+    [2.5, 3.5, 1.5], [3.14159, 2.71828, 1.41421], [4, 4, 4], [5.5, 4.5, 6.5], [6.1, 7.9, 2.2], [7, 3, 9], [8.5, 8.5, 8.5], [9.99, 0.01, 5.55],
+    [-0.5, 0.5, -0.5], [-1, -1, -1], [-2.5, 3.5, -1.5], [-3.14, -2.71, -1.41], [-4, 4, -4], [-5.5, -4.5, 6.5], [-6.1, 7.9, -2.2], [-7, -3, 9],
+    [10.5, -10.5, 3.5], [-10.5, 10.5, -3.5], [12.3, 45.6, 7.8], [-12.3, -45.6, -7.8], [100.5, 100.5, 100.5], [-100.5, -100.5, -100.5], [0.001, 0.001, 0.001], [-0.001, -0.001, -0.001],
+    [16.5, 16.5, 16.5], [17.25, 17.75, 17.5], [18, 18, 18], [19.5, 20.5, 21.5], [21.1, 22.2, 23.3], [23.3, 24.4, 25.5], [25.5, 26.6, 27.7], [27.7, 28.8, 29.9],
+    [30.5, -30.5, 30.5], [-30.5, 30.5, -30.5], [31.4159, 27.1828, 14.1421], [-31.4159, -27.1828, -14.1421], [42, 42, 42], [42.5, 42.5, 42.5], [43.21, 43.21, 43.21], [44.44, 44.44, 44.44],
+    [0.5, 63.5, 31.5], [63.5, 0.5, 31.5], [50.25, 50.75, 50.5], [-50.25, -50.75, -50.5], [55.5, -55.5, 55.5], [-55.5, 55.5, -55.5], [60.1, 60.9, 60.5], [-60.1, -60.9, -60.5],
+    [7.5, 7.5, 7.5], [13.5, 13.5, 13.5], [99.5, 99.5, 99.5], [-99.5, -99.5, -99.5], [1000.5, 1000.5, 1000.5], [-1000.5, -1000.5, -1000.5], [123.456, 789.012, 345.678], [-123.456, -789.012, -345.678],
+];
+
+/** The three committed 3D metrics, keyed by output filename (C3). */
+export const METRICS3 = [
+    { name: 'euclidean3', id: METRIC_EUCLIDEAN },
+    { name: 'manhattan3', id: METRIC_MANHATTAN },
+    { name: 'chebyshev3', id: METRIC_CHEBYSHEV },
+];
+
 // Reused scratch for the FNV byte serialisation (this is a build script, not a
 // hot path, but keep it single-buffer anyway).
 const _buf = new ArrayBuffer(8);
@@ -106,11 +130,56 @@ export function build(metric) {
     };
 }
 
+/**
+ * FNV-1a 32-bit over the concatenated f1/f2/id byte stream of every 3D coord (C3).
+ * Identical serialisation to `digest`, using `cellular3` over the 3D corpus.
+ * @param {import('../Cellular.js').Cellular} cell
+ * @param {number[][]} coords
+ * @returns {string} 8-hex-char digest
+ */
+export function digest3(cell, coords) {
+    let h = 0x811c9dc5;
+    const out = { f1: 0, f2: 0, id: 0 };
+    for (let i = 0; i < coords.length; i++) {
+        cell.cellular3(coords[i][0], coords[i][1], coords[i][2], out);
+        _f64[0] = out.f1;
+        for (let b = 0; b < 8; b++) { h ^= _bytes[b]; h = Math.imul(h, 0x01000193); }
+        _f64[0] = out.f2;
+        for (let b = 0; b < 8; b++) { h ^= _bytes[b]; h = Math.imul(h, 0x01000193); }
+        _i32[0] = out.id;
+        for (let b = 0; b < 4; b++) { h ^= _bytes[b]; h = Math.imul(h, 0x01000193); }
+    }
+    return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+}
+
+/** Build a 3D golden record object for one metric (also used by the tests to compare). */
+export function build3(metric) {
+    const cell = createCellular(SEED, { metric: metric.id, jitter: JITTER });
+    return {
+        note: 'Committed ' + metric.name + ' 3D cellular golden. Regenerate ONLY intentionally: node goldens/gen.mjs. A change is breaking (CHANGELOG note required).',
+        version: VERSION,
+        metric: metric.name,
+        metricId: metric.id,
+        seed: SEED,
+        jitter: JITTER,
+        node: process.version,
+        coordCount: COORDS3.length,
+        coords: COORDS3,
+        digest: digest3(cell, COORDS3),
+    };
+}
+
 // Written only when run directly, never on import.
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const dir = dirname(fileURLToPath(import.meta.url));
     for (const metric of METRICS) {
         const record = build(metric);
+        const path = join(dir, metric.name + '.json');
+        writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
+        process.stdout.write('wrote ' + path + '  digest=' + record.digest + '\n');
+    }
+    for (const metric of METRICS3) {
+        const record = build3(metric);
         const path = join(dir, metric.name + '.json');
         writeFileSync(path, JSON.stringify(record, null, 2) + '\n');
         process.stdout.write('wrote ' + path + '  digest=' + record.digest + '\n');

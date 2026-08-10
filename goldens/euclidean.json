@@ -1,6 +1,6 @@
 {
   "note": "Committed euclidean cellular golden. Regenerate ONLY intentionally: node goldens/gen.mjs. A change is breaking (CHANGELOG note required).",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "metric": "euclidean",
   "metricId": 0,
   "seed": 42,

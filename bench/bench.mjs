@@ -83,6 +83,26 @@ function makeTileHot(id) {
     };
 }
 
+// cellular3 hot body (single query), scattered 3D coords. ~3x the 2D cell count.
+function makeInstanceHot3(id) {
+    const inst = createCellular(1337, { metric: id, jitter: 1 });
+    let s = 1;
+    return () => {
+        s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
+        inst.cellular3((s % 65536) / 64, (s >>> 8) / 64, (s >>> 4 & 1023) / 64, OUT);
+    };
+}
+
+// tileableCell3 hot body (single query), scattered coords, period 8x8x8.
+function makeTileHot3(id) {
+    const inst = createCellular(1337, { metric: id, jitter: 1 });
+    let s = 1;
+    return () => {
+        s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
+        inst.tileableCell3((s % 65536) / 64, (s >>> 8) / 64, (s >>> 4 & 1023) / 64, 8, 8, 8, OUT);
+    };
+}
+
 // The bake bench: one fillCellField2 call is one "op". Uses a smaller op / iteration
 // count than the per-query bench (each op is a whole BW*BH field) and reports both
 // ops/sec (fields per second) and bytesPerCall (per-bake retained bytes -- the C2
@@ -114,6 +134,35 @@ function probeBake(label, id, combo, tiling) {
     return { label, opsPerSec: bestOps, bytesPerCall: bestBytes };
 }
 
+// The 3D volume bake bench: one fillCellField3 call is one op (a whole VW*VH*VD
+// volume). Smaller extents than the 2D field so an op stays comparable in voxel count.
+const VW = 24, VH = 24, VD = 24;
+const VBAKE_OPS = 800, VBAKE_WARMUP = 40, VBAKE_ITER = 160, VBAKE_BATCH = 4;
+
+function makeBakeHot3(id, combo, tiling) {
+    const inst = createCellular(1337, { metric: id, jitter: 1 });
+    const dst = new Float64Array(VW * VH * VD);
+    const opts = tiling
+        ? { combo, scale: 4 / VW, periodX: 4, periodY: 4, periodZ: 4 }
+        : { combo, scale: 0.02 };
+    return () => { inst.fillCellField3(dst, VW, VH, VD, opts); };
+}
+
+function probeBake3(label, id, combo, tiling) {
+    const makeHot = () => makeBakeHot3(id, combo, tiling);
+    let bestOps = 0;
+    for (let k = 0; k < REPS; k++) {
+        const r = measureOps(makeHot(), { ops: VBAKE_OPS, warmup: VBAKE_WARMUP, stabilize: 'deep' });
+        if (r.opsPerSec > bestOps) bestOps = r.opsPerSec;
+    }
+    let bestBytes = Infinity;
+    for (let k = 0; k < REPS; k++) {
+        const r = measureAllocs(makeHot(), { iterations: VBAKE_ITER, batches: VBAKE_BATCH });
+        if (r.bytesPerCall < bestBytes) bestBytes = r.bytesPerCall;
+    }
+    return { label, opsPerSec: bestOps, bytesPerCall: bestBytes };
+}
+
 const rows = [
     probe('cellular2 euclidean (scattered coords)', () => makeInstanceHot(METRIC_EUCLIDEAN)),
     probe('cellular2 manhattan', () => makeInstanceHot(METRIC_MANHATTAN)),
@@ -126,6 +175,16 @@ const rows = [
     probeBake('fillCellField2 f1 (tiling, 64x64)', METRIC_EUCLIDEAN, 'f1', true),
     probeBake('fillCellField2 f2-f1 (tiling, 64x64)', METRIC_EUCLIDEAN, 'f2-f1', true),
     probeBake('fillCellField2 f2 (tiling, 64x64)', METRIC_EUCLIDEAN, 'f2', true),
+    probe('cellular3 euclidean (scattered coords)', () => makeInstanceHot3(METRIC_EUCLIDEAN)),
+    probe('cellular3 manhattan', () => makeInstanceHot3(METRIC_MANHATTAN)),
+    probe('cellular3 chebyshev', () => makeInstanceHot3(METRIC_CHEBYSHEV)),
+    probe('tileableCell3 euclidean (8x8x8)', () => makeTileHot3(METRIC_EUCLIDEAN)),
+    probeBake3('fillCellField3 f1 (plain, 24^3)', METRIC_EUCLIDEAN, 'f1', false),
+    probeBake3('fillCellField3 f2-f1 (plain, 24^3)', METRIC_EUCLIDEAN, 'f2-f1', false),
+    probeBake3('fillCellField3 f2 (plain, 24^3)', METRIC_EUCLIDEAN, 'f2', false),
+    probeBake3('fillCellField3 f1 (tiling, 24^3)', METRIC_EUCLIDEAN, 'f1', true),
+    probeBake3('fillCellField3 f2-f1 (tiling, 24^3)', METRIC_EUCLIDEAN, 'f2-f1', true),
+    probeBake3('fillCellField3 f2 (tiling, 24^3)', METRIC_EUCLIDEAN, 'f2', true),
 ];
 
 process.stdout.write('lite-cellular v' + VERSION + ' bench (node ' + process.version + ', best-of-' + REPS + ')\n');

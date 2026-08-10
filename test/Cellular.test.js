@@ -16,7 +16,10 @@ import {
     METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV,
     cellular2 as moduleCellular2, seedCellular,
 } from '../Cellular.js';
-import { COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, METRICS, digest } from '../goldens/gen.mjs';
+import {
+    COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, METRICS, digest,
+    COORDS3, METRICS3, digest3,
+} from '../goldens/gen.mjs';
 import { createNoise } from '@zakkster/lite-noise';
 import { seamlessScore } from '@zakkster/lite-patternforge';
 import { bakeGradientToLut, sampleLut, gradientOcean } from '@zakkster/lite-gradient-studio';
@@ -26,7 +29,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // --- Construction -----------------------------------------------------------
 
 test('construction: exported surface and defaults', () => {
-    assert.equal(VERSION, '1.1.0');
+    assert.equal(VERSION, '1.2.0');
     assert.equal(METRIC_EUCLIDEAN, 0);
     assert.equal(METRIC_MANHATTAN, 1);
     assert.equal(METRIC_CHEBYSHEV, 2);
@@ -499,7 +502,197 @@ test('seam: cellular tile seamlessScore is near-zero and below a gradient tile',
         `cellular ${cellScore.overall} not below gradient ${gradScore.overall}`);
 });
 
+// --- 3D metrics (C3) --------------------------------------------------------
+
+test('cellular3: non-finite coords are rejected at the door (x, y, or z)', () => {
+    const c = createCellular(3);
+    for (const [x, y, z] of [[NaN, 0, 0], [0, NaN, 0], [0, 0, NaN], [Infinity, 0, 0], [0, -Infinity, 0], [0, 0, Infinity]]) {
+        assert.throws(() => c.cellular3(x, y, z), /requires finite x, y and z/, `(${x},${y},${z})`);
+    }
+});
+
+test('cellular3: jitter=0 hand-pinned distance to the known nearest 3D centre (exact)', () => {
+    // jitter=0 -> feature points sit at cell centres. Query exactly at cell (2,2,2)'s
+    // centre -> f1 = 0, f2 = 1 (an axis-neighbour centre, 1 away in all three metrics).
+    for (const id of [METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV]) {
+        const c = createCellular(7, { metric: id, jitter: 0 });
+        const r = c.cellular3(2.5, 2.5, 2.5);
+        assert.equal(r.f1, 0, 'metric ' + id + ' f1 at centre');
+        assert.equal(r.f2, 1, 'metric ' + id + ' f2 to nearest neighbour centre');
+        assert.ok(Number.isInteger(r.id) && (r.id | 0) === r.id);
+    }
+    // Off-centre euclidean: nearest centre of (5,8,3) from (5.3,8.8,3.1) is
+    // (5.5,8.5,3.5), so L2 = sqrt(0.2^2 + 0.3^2 + 0.4^2).
+    const e = createCellular(11, { jitter: 0 });
+    const re = e.cellular3(5.3, 8.8, 3.1);
+    const exp = Math.sqrt(0.2 * 0.2 + 0.3 * 0.3 + 0.4 * 0.4);
+    assert.ok(Math.abs(re.f1 - exp) < 1e-12, `euclid3 f1=${re.f1} expected ${exp}`);
+    // Manhattan at the same point: 0.2 + 0.3 + 0.4 = 0.9.
+    const m = createCellular(11, { metric: METRIC_MANHATTAN, jitter: 0 });
+    const rm = m.cellular3(5.3, 8.8, 3.1);
+    assert.ok(Math.abs(rm.f1 - 0.9) < 1e-12, `manhattan3 f1=${rm.f1} expected 0.9`);
+    // Chebyshev: max(0.2, 0.3, 0.4) = 0.4.
+    const ch = createCellular(11, { metric: METRIC_CHEBYSHEV, jitter: 0 });
+    const rc = ch.cellular3(5.3, 8.8, 3.1);
+    assert.ok(Math.abs(rc.f1 - 0.4) < 1e-12, `chebyshev3 f1=${rc.f1} expected 0.4`);
+});
+
+test('cellular3: sanity ordering cheby <= euclid <= manhattan in R^3 (f1 AND f2)', () => {
+    const e = createCellular(42, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+    const m = createCellular(42, { metric: METRIC_MANHATTAN, jitter: 1 });
+    const c = createCellular(42, { metric: METRIC_CHEBYSHEV, jitter: 1 });
+    for (const [x, y, z] of [[3.5, 7.25, 1.1], [0.1, 0.9, 0.5], [-4.4, 2.2, 3.3], [123.4, -56.7, 8.8]]) {
+        const re = e.cellular3(x, y, z, { f1: 0, f2: 0, id: 0 });
+        const rm = m.cellular3(x, y, z, { f1: 0, f2: 0, id: 0 });
+        const rc = c.cellular3(x, y, z, { f1: 0, f2: 0, id: 0 });
+        assert.ok(rc.f1 <= re.f1 + 1e-9 && re.f1 <= rm.f1 + 1e-9, `f1 order at (${x},${y},${z})`);
+        assert.ok(rc.f2 <= re.f2 + 1e-9 && re.f2 <= rm.f2 + 1e-9, `f2 order at (${x},${y},${z})`);
+    }
+});
+
+test('cellular3: f1 <= f2 and both >= 0 over a sweep; shape is {f1,f2,id}', () => {
+    const c = createCellular(99, { jitter: 1 });
+    const r0 = c.cellular3(1.5, 2.5, 3.5);
+    assert.deepEqual(Object.keys(r0).sort(), ['f1', 'f2', 'id']);
+    for (let i = 0; i < 300; i++) {
+        const x = (i * 7.31) - 100, y = (i * 3.97) - 40, z = (i * 2.13) - 30;
+        const r = c.cellular3(x, y, z);
+        assert.ok(r.f1 >= 0 && r.f2 >= 0 && r.f1 <= r.f2 && Number.isFinite(r.f2),
+            `f1=${r.f1} f2=${r.f2} at (${x},${y},${z})`);
+    }
+});
+
+// --- 3D bake (C3) -----------------------------------------------------------
+
+test('fillCellField3: writes w*h*d in place, returns dst', () => {
+    const c = createCellular(42);
+    const w = 5, h = 4, d = 3;
+    const dst = new Float64Array(w * h * d).fill(-1);
+    const r = c.fillCellField3(dst, w, h, d, { combo: 'f1', scale: 0.05 });
+    assert.equal(r, dst, 'returns the same dst reference');
+    for (let i = 0; i < dst.length; i++) assert.ok(dst[i] >= 0 && Number.isFinite(dst[i]), 'voxel ' + i);
+});
+
+test('fillCellField3: matches per-query values bit-for-bit (z outermost)', () => {
+    const c = createCellular(2024, { metric: METRIC_MANHATTAN, jitter: 1 });
+    const w = 4, h = 3, d = 3, scale = 0.07, ox = 0.3, oy = -0.2, oz = 0.5;
+    const dst = new Float64Array(w * h * d);
+    c.fillCellField3(dst, w, h, d, { combo: 'f2', scale, ox, oy, oz });
+    const o = { f1: 0, f2: 0, id: 0 };
+    let idx = 0, pz = oz;
+    for (let z = 0; z < d; z++) {
+        let py = oy;
+        for (let y = 0; y < h; y++) {
+            let px = ox;
+            for (let x = 0; x < w; x++) {
+                c.cellular3(px, py, pz, o);
+                assert.equal(dst[idx++], o.f2, `voxel (${x},${y},${z})`);
+                px += scale;
+            }
+            py += scale;
+        }
+        pz += scale;
+    }
+});
+
+test('fillCellField3: combo f1/f2-f1/cracks/f2 select correctly; cracks == f2-f1', () => {
+    const c = createCellular(7);
+    const w = 6, h = 5, d = 4, n = w * h * d;
+    const f1 = new Float64Array(n), f2 = new Float64Array(n), diff = new Float64Array(n), cr = new Float64Array(n);
+    c.fillCellField3(f1, w, h, d, { combo: 'f1' });
+    c.fillCellField3(f2, w, h, d, { combo: 'f2' });
+    c.fillCellField3(diff, w, h, d, { combo: 'f2-f1' });
+    c.fillCellField3(cr, w, h, d, { combo: 'cracks' });
+    for (let i = 0; i < n; i++) {
+        assert.equal(diff[i], f2[i] - f1[i], 'f2-f1 voxel ' + i);
+        assert.equal(cr[i], diff[i], 'cracks alias voxel ' + i);
+        assert.ok(f1[i] <= f2[i], 'f1<=f2 voxel ' + i);
+    }
+});
+
+test('fillCellField3: undersized / wrong-type / bad dims / unknown combo throw (fail closed)', () => {
+    const c = createCellular(1);
+    assert.throws(() => c.fillCellField3(new Float64Array(3), 2, 2, 2), /dst too small/);
+    assert.throws(() => c.fillCellField3([0, 0, 0, 0, 0, 0, 0, 0], 2, 2, 2), /typed-array dst/);
+    for (const [w, h, d] of [[0, 2, 2], [2, 0, 2], [2, 2, 0], [2.5, 2, 2], [2, 2, NaN], [2, 2, Infinity]]) {
+        assert.throws(() => c.fillCellField3(new Float64Array(64), w, h, d), /positive integer w, h and d/, `(${w},${h},${d})`);
+    }
+    assert.throws(() => c.fillCellField3(new Float64Array(8), 2, 2, 2, { combo: 'f3' }),
+        /unknown combo 'f3'.*'f1', 'f2-f1' \(alias 'cracks'\), or 'f2'/);
+});
+
+test('fillCellField3: normalize remaps to [0,1]; constant volume maps to all-zero', () => {
+    const c = createCellular(11);
+    const w = 8, h = 8, d = 4, n = w * h * d;
+    const nrm = new Float64Array(n);
+    c.fillCellField3(nrm, w, h, d, { combo: 'f1', scale: 0.05, normalize: true });
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < n; i++) { mn = Math.min(mn, nrm[i]); mx = Math.max(mx, nrm[i]); }
+    assert.ok(Math.abs(mn - 0) < 1e-12 && Math.abs(mx - 1) < 1e-12, `normalized range [${mn},${mx}]`);
+    // jitter=0 at each cell centre -> f1=0 everywhere -> constant field maps to all-zero.
+    const c0 = createCellular(3, { jitter: 0 });
+    const flat = new Float64Array(2 * 2 * 2);
+    c0.fillCellField3(flat, 2, 2, 2, { combo: 'f1', scale: 1, ox: 0.5, oy: 0.5, oz: 0.5, normalize: true });
+    for (let i = 0; i < flat.length; i++) assert.equal(flat[i], 0, 'constant volume voxel ' + i + ' -> 0, not NaN');
+});
+
+// --- 3D tileable (C3) -------------------------------------------------------
+
+test('tileableCell3: exact periodicity on all three axes (bit-identical f1/f2/id)', () => {
+    for (const id of [METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV]) {
+        const c = createCellular(1337, { metric: id, jitter: 1 });
+        const P = 4, Q = 8, R = 6;
+        const a = { f1: 0, f2: 0, id: 0 }, b = { f1: 0, f2: 0, id: 0 };
+        for (let k = -2; k <= 2; k++) for (let j = 0; j < 64; j += 9) {
+            const x = k + j / 64, y = (k * 2) + (j % 32) / 64, z = (k * 3) + (j % 16) / 64;
+            c.tileableCell3(x, y, z, P, Q, R, a);
+            c.tileableCell3(x + P, y, z, P, Q, R, b);
+            assert.equal(b.f1, a.f1); assert.equal(b.f2, a.f2); assert.equal(b.id, a.id);
+            c.tileableCell3(x, y + Q, z, P, Q, R, b);
+            assert.equal(b.f1, a.f1); assert.equal(b.f2, a.f2); assert.equal(b.id, a.id);
+            c.tileableCell3(x, y, z + R, P, Q, R, b);
+            assert.equal(b.f1, a.f1); assert.equal(b.f2, a.f2); assert.equal(b.id, a.id);
+        }
+    }
+});
+
+test('tileableCell3: id repeats across tiles (a region tag flat-shades every copy)', () => {
+    const c = createCellular(99, { jitter: 1 });
+    const P = 3, Q = 3, R = 3;
+    const a = { f1: 0, f2: 0, id: 0 }, b = { f1: 0, f2: 0, id: 0 };
+    c.tileableCell3(1.5, 1.5, 1.5, P, Q, R, a);
+    c.tileableCell3(1.5 + P, 1.5 + Q, 1.5 + R, P, Q, R, b);
+    assert.equal(b.id, a.id, 'id repeats one tile over on every axis');
+});
+
+test('tileableCell3: non-integer / <1 / NaN / Infinity period throws (fail closed)', () => {
+    const c = createCellular(1);
+    for (const [P, Q, R] of [[0, 4, 4], [4, 0, 4], [4, 4, 0], [-1, 4, 4], [4, 1.5, 4], [4, 4, 2.5], [NaN, 4, 4], [4, 4, Infinity]]) {
+        assert.throws(() => c.tileableCell3(0.5, 0.5, 0.5, P, Q, R), /positive integer periodX, periodY and periodZ/, `(${P},${Q},${R})`);
+    }
+});
+
+test('tileableCell3: period 1x1x1 and a huge period are finite, no throw', () => {
+    const c = createCellular(1);
+    for (const [P, Q, R] of [[1, 1, 1], [1 << 16, 1 << 16, 1 << 16]]) {
+        const r = c.tileableCell3(3.3, 4.4, 5.5, P, Q, R);
+        assert.ok(Number.isFinite(r.f1) && Number.isFinite(r.f2) && r.f1 <= r.f2, `period ${P}x${Q}x${R}`);
+    }
+});
+
 // --- Goldens ----------------------------------------------------------------
+
+test('golden 3D: all three metric digests re-derive bit-for-bit', () => {
+    for (const metric of METRICS3) {
+        const committed = JSON.parse(readFileSync(join(HERE, '../goldens/' + metric.name + '.json'), 'utf8'));
+        assert.equal(committed.metricId, metric.id);
+        assert.equal(committed.seed, GOLD_SEED);
+        assert.equal(committed.jitter, GOLD_JITTER);
+        const cell = createCellular(GOLD_SEED, { metric: metric.id, jitter: GOLD_JITTER });
+        assert.equal(digest3(cell, COORDS3), committed.digest,
+            metric.name + ' mismatch is a breaking 3D kernel change -- regenerate with node goldens/gen.mjs');
+    }
+});
 
 test('golden: all three metric digests re-derive bit-for-bit; euclidean stays 33a16e9e', () => {
     for (const metric of METRICS) {

@@ -3,6 +3,77 @@
 All notable changes to `@zakkster/lite-cellular` are documented here.
 The format follows Keep a Changelog; this package adheres to SemVer.
 
+## [1.2.0] - 2026-08-09
+
+The 3D lift (session C3): the whole 2D texture surface carried into three dimensions
+over the 3x3x3 = 27-cell neighbourhood -- a verbatim lift of decisions 0001..0006, no
+new design (`decisions/0007` closed). The entire 2D surface is BYTE-UNCHANGED: all
+three 2D goldens re-derive (`33a16e9e` / `fa25dafd` / `5e5cbfa6`), and no 3D code
+leaked into the per-query 2D hot loop.
+
+### Added
+- **`cellular3(x, y, z, out?) -> {f1,f2,id}`** (instance method) -- the 27-cell scan;
+  the 2D `{f1,f2,id}` shape plus depth, in this instance's metric. A verbatim lift of
+  `cellular2` (`decisions/0007`), ~3x the per-query cost by cell count, same zero-alloc
+  shape. Throws on non-finite `x`, `y`, or `z`.
+- **`fillCellField3(dst, w, h, d, opts?) -> dst`** (instance method) -- bake a `w*h*d`
+  VOLUME into a caller-owned `Float64Array`/`Float32Array`, row-major with z outermost
+  (`idx = (z*h + y)*w + x`), ALLOCATION-FREE. Combo decoded to a small int ONCE, metric
+  bound once, one reused scratch struct, `opts?.k ?? default` (no `opts = {}`), opt-in
+  in-place `normalize`. Fail closed: non-positive-integer `w`/`h`/`d`, an undersized or
+  non-typed-array `dst`, and an unknown `combo` each throw. `oz` joins `ox`/`oy`.
+- **`tileableCell3(x, y, z, periodX, periodY, periodZ, out?) -> {f1,f2,id}`** (instance
+  method) -- `cellular3` with each neighbour's INTEGER cell coordinate reduced mod its
+  period on ALL THREE axes, so the volume is EXACTLY periodic (`===`, not epsilon) and
+  seamless by construction (`decisions/0006` lifted). All three periods are required
+  positive integers (`0`, negatives, non-integers, `NaN`, `Infinity` throw). With
+  `opts.periodX`/`periodY`/`periodZ` set, `fillCellField3` bakes a seamless tile.
+- **Six 3D kernels** (`_cellular3Euclid` / `_Manhattan` / `_Chebyshev` + the three
+  `_tileableCell3*`) plus `_hash3` / `_hash3b` / `_hash3c` (a third decorrelated draw
+  `w` for the z placement, `decisions/0003`), fully inlined with the metric dropped and
+  bound once as `this._kernel3` / `this._tileKernel3` -- twelve kernels across 2D+3D,
+  NEVER a dimension-parameterised loop (`decisions/0007` Decision 3). The tiling kernels
+  compute distance in the query cell's LOCAL frame so the `===` wrap is real, not
+  epsilon. Instance-only: no module 3D surface, no 4D (`decisions/0007` Decision 4).
+- **Three 3D goldens** `goldens/euclidean3.json` / `manhattan3.json` / `chebyshev3.json`
+  -- seed-42 FNV-1a digests (`7bac7c6f` / `f1b621b5` / `1682d095`) over a fixed 64-coord
+  3D corpus. The unit suite and torture T0 re-derive all three; the 2D goldens are
+  unchanged.
+- **Torture extended** (2D lanes untouched): T0 (3D determinism / range / metric-sanity
+  for f1 AND f2 / jitter=0 nearest-3D-centre grid / id-within-3D-cell / exact tile
+  periodicity on all three axes / 3D bake==per-query / three 3D goldens), T3 (the
+  world-scale limit PER AXIS -- large `z` degenerates like large `x` -- extreme
+  `periodZ`, `d=1` slab, large volume, fail-closed guards), T5 (3D instance isolation
+  into NS-01, 3D bake reseed-reproducible + module-independent), T6 (`cellular3` /
+  `tileableCell3` / `fillCellField3` plain + tiling each combo at
+  `maxArrayBuffersGrowth: 0` with a `dst.buffer.byteLength` assert + the zero-retention
+  lane), T7 (dropped instances that ran the 3D surfaces are collectable), T9 (the two
+  new 3D controls proven able to fail). New break controls
+  `CELLULAR_TORTURE_BREAK_ALLOC3=1` and `CELLULAR_TORTURE_BREAK_FLOATWRAP3=1` each exit
+  non-zero.
+- **`bench/bench.mjs`** extended with `cellular3` (per metric), `tileableCell3`, and
+  `fillCellField3` (per combo, plain + tiling); `bench/BASELINE.md` updated. `cellular3`
+  euclidean measures ~4.8 Mops/s against the 2D ~14.3 -- the 3.0x cell-count ratio the
+  decision forecast. All 3D probes read `bytesPerCall: 0`.
+
+### Changed
+- `VERSION` -> `1.2.0` (in lockstep with `package.json` and `llms.txt`).
+- **`CELLULAR_BYTE_CEILING` raised 33792 -> 61440** to seat the six 3D kernels, the
+  three 3D hashes, and the three 3D methods with their doc comments (Cellular.js is
+  ~54 KB). A deliberate bump, noted here.
+- **`opts.jitter` override is now bounds-validated in BOTH bakers** (`fillCellField2`
+  and `fillCellField3`) -- fail-closed, matching the constructor: `NaN`, `Infinity`,
+  a value outside `[0, 1]`, `null`, and non-numbers throw the same `Error` instead of
+  silently baking an Infinity field or letting feature points escape the neighbourhood.
+  Validated once at setup, off the hot loop; an omitted jitter still falls back to the
+  instance default with no throw.
+- Decision record `0007` closed (`Status: accepted, 2026-08-09`) with its Measured
+  table filled from the built 3D kernels and the bench run.
+
+### Planned
+- **v1.3.0 (C4):** the full 2D-vs-3D cross-product baseline and the
+  3x3x3-sufficiency-vs-oracle proof; `bench/BASELINE.md` consolidation.
+
 ## [1.1.0] - 2026-08-09
 
 The texture surface (session C2): the zero-alloc field baker and the exactly-seamless
@@ -174,6 +245,7 @@ bite. Everything later extends this command.
 - **v1.2.0 (C3):** `cellular3` / `fillCellField3` -- the 3x3x3 = 27-cell loop on
   the same zero-alloc bar.
 
+[1.2.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v1.2.0
 [1.1.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v1.1.0
 [1.0.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v1.0.0
 [0.1.0]: https://github.com/PeshoVurtoleta/lite-cellular/releases/tag/v0.1.0

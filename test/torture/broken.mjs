@@ -16,6 +16,11 @@
  *                          Breaks the T0 exact-periodicity law. Carries its own copy
  *                          of the hash (Cellular.js keeps it private) so the control
  *                          is otherwise identical to the real euclidean kernel.
+ *   - `cellular3Allocating`: 0007/0005 anti-pattern -- a `cellular3` query that
+ *                          allocates a RETAINED per-call out-struct, so the T6 3D
+ *                          zero-retention gate reads bytes > 0.
+ *   - `tileHashRawCell3` : the 3D `tileHashRawCell` -- the 0006 anti-pattern in R^3,
+ *                          breaking the T0 3D exact-periodicity law.
  *
  * @license MIT
  */
@@ -39,6 +44,37 @@ function _hash2b(cx, cy, seed) {
     h = Math.imul(h ^ (h >>> 13), h | 1);
     h ^= h + Math.imul(h ^ (h >>> 9), h | 63);
     return (h ^ (h >>> 16)) >>> 0;
+}
+
+// Verbatim copies of Cellular.js `_hash3` / `_hash3b` / `_hash3c` (private there), so
+// the 3D control hashes identically to the real 3D kernel and ONLY the anti-pattern
+// differs.
+function _hash3(cx, cy, cz, seed) {
+    let h = seed | 0;
+    h = (h + Math.imul(cx | 0, 0x27d4eb2f)) | 0;
+    h = (h + Math.imul(cy | 0, 0x165667b1)) | 0;
+    h = (h + Math.imul(cz | 0, 0x9e3779b1)) | 0;
+    h = Math.imul(h ^ (h >>> 15), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 7), h | 61);
+    return (h ^ (h >>> 14)) >>> 0;
+}
+function _hash3b(cx, cy, cz, seed) {
+    let h = (seed ^ 0x9e3779b9) | 0;
+    h = (h + Math.imul(cx | 0, 0x85ebca6b)) | 0;
+    h = (h + Math.imul(cy | 0, 0xc2b2ae35)) | 0;
+    h = (h + Math.imul(cz | 0, 0x27d4eb2f)) | 0;
+    h = Math.imul(h ^ (h >>> 13), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 9), h | 63);
+    return (h ^ (h >>> 16)) >>> 0;
+}
+function _hash3c(cx, cy, cz, seed) {
+    let h = (seed ^ 0x85ebca6b) | 0;
+    h = (h + Math.imul(cx | 0, 0xc2b2ae35)) | 0;
+    h = (h + Math.imul(cy | 0, 0x9e3779b1)) | 0;
+    h = (h + Math.imul(cz | 0, 0x165667b1)) | 0;
+    h = Math.imul(h ^ (h >>> 14), h | 1);
+    h ^= h + Math.imul(h ^ (h >>> 11), h | 59);
+    return (h ^ (h >>> 15)) >>> 0;
 }
 
 /**
@@ -109,6 +145,53 @@ export function tileHashRawCell(seed, jitter, periodX, periodY, x, y, out) {
             const d = dx * dx + dy * dy;
             if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
             else if (d < f2) { f2 = d; }
+        }
+    }
+    out.f1 = Math.sqrt(f1);
+    out.f2 = Math.sqrt(f2);
+    out.id = id;
+    return out;
+}
+
+/**
+ * 0007/0005 anti-pattern in 3D: a `cellular3`-shaped query that allocates a fresh
+ * out-struct per call and RETAINS it (pushed to a sink so it escapes and survives
+ * collection). Same 27-cell euclidean scan as the real kernel otherwise -- the T6 3D
+ * zero-retention gate must read bytes > 0. `inst` is a real Cellular instance; the
+ * control just wraps its `cellular3` with a retained per-call object.
+ */
+export function cellular3Allocating(inst, x, y, z, sink) {
+    const o = { f1: 0, f2: 0, id: 0 };   // fresh per-call object (forbidden)
+    inst.cellular3(x, y, z, o);
+    sink.push(o);                          // retained -> escapes, survives GC
+    return o.f1;
+}
+
+/**
+ * 0006 anti-pattern in R^3: wrap only the LOCAL frame (the float coord), keep the
+ * HASH on the UNWRAPPED integer cell. The volume is then NOT periodic -- the cell at
+ * `x` and the cell at `x + periodX` hash differently -- so `tile(x)` != `tile(x+P)`.
+ * Euclidean, jitter 1; otherwise identical to the real euclidean 3D tiling kernel.
+ */
+export function tileHashRawCell3(seed, jitter, periodX, periodY, periodZ, x, y, z, out) {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const rx = x - ix, ry = y - iy, rz = z - iz;
+    let f1 = Infinity, f2 = Infinity, id = 0;
+    for (let gz = -1; gz <= 1; gz++) {
+        for (let gy = -1; gy <= 1; gy++) {
+            for (let gx = -1; gx <= 1; gx++) {
+                // WRONG: hash the raw (unwrapped) cell -> not periodic (0006 forbids this).
+                const h = _hash3(ix + gx, iy + gy, iz + gz, seed);
+                const u = h / _UINT32;
+                const v = _hash3b(ix + gx, iy + gy, iz + gz, seed) / _UINT32;
+                const w = _hash3c(ix + gx, iy + gy, iz + gz, seed) / _UINT32;
+                const dx = (gx + 0.5 + jitter * (u - 0.5)) - rx;
+                const dy = (gy + 0.5 + jitter * (v - 0.5)) - ry;
+                const dz = (gz + 0.5 + jitter * (w - 0.5)) - rz;
+                const d = dx * dx + dy * dy + dz * dz;
+                if (d < f1) { f2 = f1; f1 = d; id = h | 0; }
+                else if (d < f2) { f2 = d; }
+            }
         }
     }
     out.f1 = Math.sqrt(f1);

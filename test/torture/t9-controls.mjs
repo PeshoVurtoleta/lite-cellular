@@ -35,8 +35,11 @@ import { createLeakTracker } from '@zakkster/lite-leak';
 import { runOpsGate, runAllocGate, die } from './harness.mjs';
 import { COORDS, SEED as GOLD_SEED, JITTER as GOLD_JITTER, digest } from '../../goldens/gen.mjs';
 import { instanceIsolationHolds, sharedSeedFactory } from './t5-fuzz.mjs';
-import { exactPeriodicityHolds } from './t0-laws.mjs';
-import { bakeAllocating, bakeComboParse, tileHashRawCell } from './broken.mjs';
+import { exactPeriodicityHolds, exactPeriodicity3Holds } from './t0-laws.mjs';
+import {
+    bakeAllocating, bakeComboParse, tileHashRawCell,
+    cellular3Allocating, tileHashRawCell3,
+} from './broken.mjs';
 
 /** Escaping sinks for the C2 bake controls, so V8 cannot elide the retained allocs. */
 const bakeSink = [];
@@ -166,6 +169,37 @@ export async function run() {
                 '(bytesPerCall=' + result.bytesPerCall + ') -- the bake gate cannot fail');
         }
         bakeSink.length = 0;
+    }
+
+    // --- C3 controls: the two 3D gates proven able to fail (0007) ------------
+
+    // C3 (a) -- a cellular3 that allocates a RETAINED per-query out-struct. The T6 3D
+    // zero-retention gate must reject it.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        let s = 3;
+        const hot = () => {
+            s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
+            cellular3Allocating(inst, (s % 65536) / 64, (s >>> 8) / 64, (s >>> 4 & 1023) / 64, escSink);
+        };
+        const { report, result } = runAllocGate(hot, { iterations: 8000, batches: 4, reps: 1 });
+        if (report.verdict !== 'fail') {
+            die('T9 control(cellular3-alloc): a per-query-allocating cellular3 passed the zero-retention gate ' +
+                '(bytesPerCall=' + result.bytesPerCall + ') -- the 3D alloc gate cannot fail');
+        }
+        if (escSink.length === 0) die('T9 control(cellular3-alloc): sink empty -- the escape was elided');
+        escSink.length = 0;
+    }
+
+    // C3 (b) -- a 3D tiling kernel that hashes the UNWRAPPED cell (wraps the float
+    // coord, not the integer cell -- 0006 anti-pattern in R^3). It must NOT be exactly
+    // periodic; if it is, the T0 3D periodicity law is blind.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const brokenSample = (x, y, z, P, Q, R, o) => tileHashRawCell3(inst._seed, inst._jitter, P, Q, R, x, y, z, o);
+        if (exactPeriodicity3Holds(brokenSample)) {
+            die('T9 control(3D float-wrap): a raw-cell-hash 3D tiling kernel was still exactly periodic -- the 3D periodicity law is blind');
+        }
     }
 
     // Control 3 (C0) -- the retention detector: a dropped instance must collect

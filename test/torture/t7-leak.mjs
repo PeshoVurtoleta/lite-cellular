@@ -39,7 +39,15 @@ export async function run() {
         for (let i = 0; i < CYCLES; i++) {
             const metric = METRIC_IDS[i % 3];
             const inst = createCellular(i, { metric, jitter: 1 });
-            inst.cellular2(i * 0.5, -i * 0.5);       // touch it so the alloc is real
+            inst.cellular2(i * 0.5, -i * 0.5);       // touch the 2D surface so the alloc is real
+            // Also exercise every 3D surface so a dropped instance that ran the 27-cell
+            // kernels, the volume bake, and the 3D tile is still collectable (0007): the
+            // _kernel3/_tileKernel3 bindings are plain function refs, not closures over
+            // the instance.
+            inst.cellular3(i * 0.5, -i * 0.5, i * 0.25);
+            inst.tileableCell3(i * 0.5, -i * 0.5, i * 0.25, 4, 4, 4);
+            const vox = new Float64Array(2 * 2 * 2);
+            inst.fillCellField3(vox, 2, 2, 2, { combo: 'f1', scale: 0.1 });
             tracker.track(inst, NOOP, i);
         }
     })();
@@ -57,6 +65,7 @@ export async function run() {
     const ctrl = createLeakTracker({ name: 'cellular-leak-ctrl' });
     const kept = createCellular(0x5eed, { metric: METRIC_CHEBYSHEV, jitter: 1 });
     kept.cellular2(1.5, 2.5);
+    kept.cellular3(1.5, 2.5, 3.5);
     ctrl.track(kept, NOOP, 0x5eed);
     held.push(kept);
 
