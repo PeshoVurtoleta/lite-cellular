@@ -81,6 +81,24 @@ export const BREAK_ALLOC3 = process.env.CELLULAR_TORTURE_BREAK_ALLOC3 === '1';
 export const BREAK_FLOATWRAP3 = process.env.CELLULAR_TORTURE_BREAK_FLOATWRAP3 === '1';
 
 /**
+ * C4 break controls (each makes the whole run exit non-zero, proving a new gate bites):
+ *   - BREAK_PRECISION : the world-scale precision tier (T3) runs against a kernel that
+ *                       SILENTLY degrades past the pinned precision limit instead of
+ *                       hitting the pinned collapse -- the degenerate pin must reject it.
+ *   - BREAK_ORACLE    : the oracle tier (t-oracle) runs a corrupted oracle that agrees
+ *                       with a wrong kernel -- the bit-for-bit sufficiency check must trip.
+ *   - BREAK_MATRIX    : the cross-product matrix tier (t-matrix) flips one pinned cell's
+ *                       answer -- the matrix's named assertion must catch it, proving the
+ *                       matrix asserts and does not merely run.
+ *   - BREAK_SOAK      : the 65536-cycle soak (T7) retains one instance -- the leak
+ *                       tracker must report size 1 and fail the tier.
+ */
+export const BREAK_PRECISION = process.env.CELLULAR_TORTURE_BREAK_PRECISION === '1';
+export const BREAK_ORACLE = process.env.CELLULAR_TORTURE_BREAK_ORACLE === '1';
+export const BREAK_MATRIX = process.env.CELLULAR_TORTURE_BREAK_MATRIX === '1';
+export const BREAK_SOAK = process.env.CELLULAR_TORTURE_BREAK_SOAK === '1';
+
+/**
  * Whole-window zero-GC rules. maxArrayBuffersGrowth needs measureOps
  * `stabilize:'deep'` (ArrayBuffer backing stores live outside the V8 heap).
  */

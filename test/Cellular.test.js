@@ -29,7 +29,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // --- Construction -----------------------------------------------------------
 
 test('construction: exported surface and defaults', () => {
-    assert.equal(VERSION, '1.2.0');
+    assert.equal(VERSION, '1.3.0');
     assert.equal(METRIC_EUCLIDEAN, 0);
     assert.equal(METRIC_MANHATTAN, 1);
     assert.equal(METRIC_CHEBYSHEV, 2);

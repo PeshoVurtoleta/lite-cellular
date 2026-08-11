@@ -1,9 +1,19 @@
 /**
- * @zakkster/lite-cellular v1.2.0 -- the texture surface, in 2D and 3D.
+ * @zakkster/lite-cellular v1.3.0 -- the texture surface, in 2D and 3D.
  *
  * Zero-GC Worley/cellular noise for 2D. `cellular2(x, y, out?)` returns the two
  * nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written
  * into a caller-owned out-struct -- zero allocation on the query path.
+ *
+ * v1.3.0 (C4) makes the neighbourhood EXACT (0008). A fixed 3x3 / 3x3x3 scan is
+ * sufficient only for chebyshev (L-inf never reaches past the adjacent cell); an
+ * L1/L2 unit-cell ball can reach a feature TWO cells away, so the radius-1 euclid and
+ * manhattan kernels missed the true `f1`/`f2` in rare edge cases (~2e-6 euclid, ~2e-4
+ * manhattan). The 8 euclid/manhattan kernels are widened to radius 2 (2D 5x5 = 25
+ * cells, 3D 5x5x5 = 125 cells); the 4 chebyshev kernels stay radius 1 (byte-unchanged).
+ * Now every metric's scan is guaranteed to contain the true nearest and second-nearest
+ * feature at its exact radius -- proven bit-for-bit against a radius-3 oracle. The
+ * euclid/manhattan goldens re-derive to new digests; the chebyshev goldens do not move.
  *
  * v1.0.0 (C1) opens the three distance metrics (euclidean/manhattan/chebyshev),
  * fixed at instance creation via an integer id, and adds the module free-function
@@ -22,8 +32,9 @@
  *
  * v1.2.0 (C3) LIFTS the whole 2D surface into 3D -- a verbatim lift of decisions
  * 0001..0006 with the coordinate count bumped 2 -> 3, closing decisions/0007. Three
- * INSTANCE methods, all zero-alloc, over the 3x3x3 = 27-cell neighbourhood:
- *   - `cellular3(x, y, z, out?)` -- the 27-cell scan; same `{f1,f2,id}` shape.
+ * INSTANCE methods, all zero-alloc, over a per-metric neighbourhood (chebyshev
+ * 3x3x3 = 27 cells; euclid/manhattan 5x5x5 = 125 cells since 1.3.0, 0008):
+ *   - `cellular3(x, y, z, out?)` -- the neighbourhood scan; same `{f1,f2,id}` shape.
  *   - `fillCellField3(dst, w, h, d, opts?)` -- 0005's baker lifted to a volume.
  *   - `tileableCell3(x, y, z, periodX, periodY, periodZ, out?)` -- 0006's exact
  *     integer-cell wrap on all three axes.
@@ -37,7 +48,7 @@
  * The metric is NOT threaded into the hot loop. There are three metric-specific
  * kernels, each with its distance expression inlined and the metric param DROPPED;
  * the constructor resolves the id to exactly one kernel reference (`this._kernel`)
- * once, so the per-query cost is one indirect call OFF the 9-cell loop and ZERO
+ * once, so the per-query cost is one indirect call OFF the neighbourhood loop and ZERO
  * metric branches per neighbour (0001). `grep -n 'metric' Cellular.js` finds it
  * only in the constructor validation and the binding -- never in a loop body.
  *
@@ -45,8 +56,8 @@
  *   - feature point of cell (cx,cy) = (cx + 0.5 + jitter*(u-0.5),
  *                                      cy + 0.5 + jitter*(v-0.5))  (0003)
  *   - euclidean returns TRUE distance: squared distance accumulates in the loop,
- *     one sqrt for f1 and one for f2 at the very end -- no sqrt inside the 9-cell
- *     loop. manhattan (|dx|+|dy|) and chebyshev (max(|dx|,|dy|)) accumulate their
+ *     one sqrt for f1 and one for f2 at the very end -- no sqrt inside the
+ *     neighbourhood loop. manhattan (|dx|+|dy|) and chebyshev (max(|dx|,|dy|)) accumulate their
  *     linear distance directly, no sqrt. All three report in the SAME linear
  *     units, so the metric-sanity law and the caller's `f2 - f1` stay coherent
  *     (0001).
@@ -64,7 +75,7 @@
  * @license MIT
  */
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 
 // The metric id space (0001). C0 opened id 0; C1 opens 1 and 2. The guard widens
 // the accepted set (0/1/2) -- it never loosens: any other value still throws.
@@ -105,7 +116,8 @@ function _hash2b(cx, cy, seed) {
     return (h ^ (h >>> 16)) >>> 0;
 }
 
-// --- the three kernels: ZERO allocation, fixed 3x3 loop, scalar only --------
+// --- the three kernels: ZERO allocation, fixed neighbourhood loop, scalar only --------
+// (euclid/manhattan scan 5x5 = 25 cells, chebyshev 3x3 = 9 cells -- 0008.)
 // State is the first parameter (mirroring Noise.js), so the hot loop reads locals,
 // never `this.*`. The `metric` param is DROPPED (0001 Decision 2): each kernel
 // inlines exactly one distance expression, so V8 sees one shape per kernel and
@@ -133,8 +145,11 @@ function _cellular2Euclid(seed, jitter, x, y, out) {
     }
     const ix = Math.floor(x), iy = Math.floor(y);
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gy = -1; gy <= 1; gy++) {
-        for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (5x5 = 25 cells): an L2 unit-cell ball can reach a feature point two
+    // cells away, so the true f1/f2 are only guaranteed inside the 5x5 neighbourhood --
+    // the radius-1 3x3 missed them ~2e-6 of the time (0008). Chebyshev stays radius 1.
+    for (let gy = -2; gy <= 2; gy++) {
+        for (let gx = -2; gx <= 2; gx++) {
             const cx = ix + gx, cy = iy + gy;
             const h = _hash2(cx, cy, seed);
             const u = h / _UINT32;
@@ -165,8 +180,11 @@ function _cellular2Manhattan(seed, jitter, x, y, out) {
     }
     const ix = Math.floor(x), iy = Math.floor(y);
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gy = -1; gy <= 1; gy++) {
-        for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (5x5 = 25 cells): an L1 unit-cell ball reaches farther than an L2 ball,
+    // so manhattan needs the 5x5 neighbourhood too -- the radius-1 3x3 missed the true
+    // f1/f2 ~2e-4 of the time (0008). Chebyshev stays radius 1 (L-inf is exact at 3x3).
+    for (let gy = -2; gy <= 2; gy++) {
+        for (let gx = -2; gx <= 2; gx++) {
             const cx = ix + gx, cy = iy + gy;
             const h = _hash2(cx, cy, seed);
             const u = h / _UINT32;
@@ -256,8 +274,11 @@ function _tileableCell2Euclid(seed, jitter, periodX, periodY, x, y, out) {
     const ix = Math.floor(x), iy = Math.floor(y);
     const rx = x - ix, ry = y - iy;   // fractional home-cell position; bit-stable under +period
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gy = -1; gy <= 1; gy++) {
-        for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (25 cells), matching the plain euclid kernel (0008). The wrap on the
+    // INTEGER cell and the local-frame offset extend to the wider ring verbatim, so the
+    // tile stays EXACTLY periodic (0006) AND the widened f1/f2 are exact.
+    for (let gy = -2; gy <= 2; gy++) {
+        for (let gx = -2; gx <= 2; gx++) {
             const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY);   // wrap the INTEGER cell (0006)
             const h = _hash2(wx, wy, seed);
             const u = h / _UINT32;
@@ -284,8 +305,11 @@ function _tileableCell2Manhattan(seed, jitter, periodX, periodY, x, y, out) {
     const ix = Math.floor(x), iy = Math.floor(y);
     const rx = x - ix, ry = y - iy;
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gy = -1; gy <= 1; gy++) {
-        for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (25 cells), matching the plain manhattan kernel (0008). The wrap on the
+    // INTEGER cell and the local-frame offset extend to the wider ring verbatim, so the
+    // tile stays EXACTLY periodic (0006) AND the widened f1/f2 are exact.
+    for (let gy = -2; gy <= 2; gy++) {
+        for (let gx = -2; gx <= 2; gx++) {
             const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY);
             const h = _hash2(wx, wy, seed);
             const u = h / _UINT32;
@@ -373,20 +397,20 @@ function _hash3c(cx, cy, cz, seed) {
     return (h ^ (h >>> 15)) >>> 0;
 }
 
-// --- the six 3D kernels: ZERO allocation, fixed 3x3x3 loop, scalar only ------
-// A verbatim lift of the six 2D kernels with the coordinate count bumped 2 -> 3 and
-// the neighbourhood grown 9 -> 27 cells (0007 Decision 2/3). The metric is DROPPED
-// exactly as in 2D: three plain + three tiling kernels, each with one distance line
-// inlined, bound once at construction to `this._kernel3` / `this._tileKernel3`, so
-// the per-query cost is one indirect call OFF the 27-cell loop and zero metric
+// --- the six 3D kernels: ZERO allocation, fixed neighbourhood loop, scalar only ------
+// A verbatim lift of the six 2D kernels with the coordinate count bumped 2 -> 3 (0007
+// Decision 2/3). Per-metric radius (0008): chebyshev scans 3x3x3 = 27 cells, euclid and
+// manhattan scan 5x5x5 = 125 cells (an L1/L2 ball reaches two cells away). The metric is
+// DROPPED exactly as in 2D: three plain + three tiling kernels, each with one distance
+// line inlined, bound once at construction to `this._kernel3` / `this._tileKernel3`, so
+// the per-query cost is one indirect call OFF the neighbourhood loop and zero metric
 // branches per neighbour. NEVER a dimension-parameterised loop (0007 Decision 3):
 // keeping them separate and inlined is the monomorphism the package is built on.
-// The 2D kernels above are byte-unchanged.
 
 /**
- * EUCLIDEAN 3D kernel. Accumulates SQUARED distance over the 27-cell loop (no sqrt
+ * EUCLIDEAN 3D kernel. Accumulates SQUARED distance over the 125-cell loop (no sqrt
  * per neighbour) and takes one sqrt for f1 and one for f2 at the very end -- TRUE
- * euclidean distance in R^3 (0001 Decision 3, lifted 0007).
+ * euclidean distance in R^3 (0001 Decision 3, lifted 0007; radius 2 per 0008).
  */
 function _cellular3Euclid(seed, jitter, x, y, z, out) {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
@@ -395,9 +419,12 @@ function _cellular3Euclid(seed, jitter, x, y, z, out) {
     }
     const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gz = -1; gz <= 1; gz++) {
-        for (let gy = -1; gy <= 1; gy++) {
-            for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (5x5x5 = 125 cells): the 2D widening (0008) lifted to R^3 -- an L2 ball
+    // reaches a feature two cells away on any axis, so the true f1/f2 live in the 5x5x5
+    // neighbourhood. Chebyshev stays radius 1 (27 cells).
+    for (let gz = -2; gz <= 2; gz++) {
+        for (let gy = -2; gy <= 2; gy++) {
+            for (let gx = -2; gx <= 2; gx++) {
                 const cx = ix + gx, cy = iy + gy, cz = iz + gz;
                 const h = _hash3(cx, cy, cz, seed);
                 const u = h / _UINT32;
@@ -430,9 +457,11 @@ function _cellular3Manhattan(seed, jitter, x, y, z, out) {
     }
     const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gz = -1; gz <= 1; gz++) {
-        for (let gy = -1; gy <= 1; gy++) {
-            for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (5x5x5 = 125 cells): the 2D manhattan widening (0008) lifted to R^3.
+    // Chebyshev stays radius 1 (27 cells).
+    for (let gz = -2; gz <= 2; gz++) {
+        for (let gy = -2; gy <= 2; gy++) {
+            for (let gx = -2; gx <= 2; gx++) {
                 const cx = ix + gx, cy = iy + gy, cz = iz + gz;
                 const h = _hash3(cx, cy, cz, seed);
                 const u = h / _UINT32;
@@ -504,9 +533,12 @@ function _tileableCell3Euclid(seed, jitter, periodX, periodY, periodZ, x, y, z, 
     const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
     const rx = x - ix, ry = y - iy, rz = z - iz;   // fractional home-cell position; bit-stable under +period
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gz = -1; gz <= 1; gz++) {
-        for (let gy = -1; gy <= 1; gy++) {
-            for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (125 cells), matching the plain euclid 3D kernel (0008). The per-axis
+    // wrap on the INTEGER cell and the local-frame offset extend to the wider ring
+    // verbatim, so the volume stays EXACTLY periodic (0006) AND the widened f1/f2 exact.
+    for (let gz = -2; gz <= 2; gz++) {
+        for (let gy = -2; gy <= 2; gy++) {
+            for (let gx = -2; gx <= 2; gx++) {
                 const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY), wz = _wrap(iz + gz, periodZ);
                 const h = _hash3(wx, wy, wz, seed);
                 const u = h / _UINT32;
@@ -536,9 +568,12 @@ function _tileableCell3Manhattan(seed, jitter, periodX, periodY, periodZ, x, y, 
     const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
     const rx = x - ix, ry = y - iy, rz = z - iz;
     let f1 = Infinity, f2 = Infinity, id = 0;
-    for (let gz = -1; gz <= 1; gz++) {
-        for (let gy = -1; gy <= 1; gy++) {
-            for (let gx = -1; gx <= 1; gx++) {
+    // Radius 2 (125 cells), matching the plain manhattan 3D kernel (0008). Wrap on the
+    // INTEGER cell + local-frame offset extend to the wider ring verbatim -- the volume
+    // stays EXACTLY periodic (0006) AND the widened f1/f2 are exact.
+    for (let gz = -2; gz <= 2; gz++) {
+        for (let gy = -2; gy <= 2; gy++) {
+            for (let gx = -2; gx <= 2; gx++) {
                 const wx = _wrap(ix + gx, periodX), wy = _wrap(iy + gy, periodY), wz = _wrap(iz + gz, periodZ);
                 const h = _hash3(wx, wy, wz, seed);
                 const u = h / _UINT32;
@@ -625,7 +660,7 @@ export class Cellular {
         this._metric = metric;
         this._jitter = jitter;
         // Resolve the metric id to exactly one kernel reference, ONCE (0001). The
-        // per-query call is one indirect call off the 9-cell loop; the loop each
+        // per-query call is one indirect call off the neighbourhood loop; the loop each
         // kernel runs is monomorphic and branch-free. This is the only place the
         // metric touches the query path.
         this._kernel = metric === METRIC_MANHATTAN ? _cellular2Manhattan
@@ -638,8 +673,8 @@ export class Cellular {
                          : metric === METRIC_CHEBYSHEV ? _tileableCell2Chebyshev
                          : _tileableCell2Euclid;
         // Bind the matching 3D pair once too (0007), metric-selected exactly as the
-        // 2D pair above -- the per-query 27-cell scan is one indirect call off the
-        // loop, and the 2D binding is byte-unchanged. NO dimension parameter: 2D and
+        // 2D pair above -- the per-query neighbourhood scan is one indirect call off the
+        // loop. NO dimension parameter: 2D and
         // 3D are separate inlined kernel families (0007 Decision 3).
         this._kernel3 = metric === METRIC_MANHATTAN ? _cellular3Manhattan
                       : metric === METRIC_CHEBYSHEV ? _cellular3Chebyshev
@@ -853,8 +888,8 @@ export class Cellular {
      * Sample the 3D field at (x, y, z). Returns `{ f1, f2, id }`: the nearest and
      * second feature-point distances (in this instance's metric) and the F1 owner's
      * cell id -- the 2D shape plus depth. A verbatim lift of `cellular2` to the
-     * 3x3x3 = 27-cell neighbourhood (0007); ~3x the per-query cost by cell count,
-     * same zero-alloc shape. Instance-only (there is no module 3D surface, 0007).
+     * 3D neighbourhood (0007): chebyshev 3x3x3 = 27 cells, euclid/manhattan 5x5x5 = 125
+     * cells (0008), same zero-alloc shape. Instance-only (there is no module 3D surface).
      *
      * `out` is optional; if passed its `f1`/`f2`/`id` are written in place and it is
      * returned, else the instance's OWN reused out-struct is returned. No allocation

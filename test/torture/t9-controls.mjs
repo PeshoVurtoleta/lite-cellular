@@ -39,6 +39,7 @@ import { exactPeriodicityHolds, exactPeriodicity3Holds } from './t0-laws.mjs';
 import {
     bakeAllocating, bakeComboParse, tileHashRawCell,
     cellular3Allocating, tileHashRawCell3,
+    degradedPrecisionSample, oracleCorrupt2, matrixWrongCell, retainForSoak,
 } from './broken.mjs';
 
 /** Escaping sinks for the C2 bake controls, so V8 cannot elide the retained allocs. */
@@ -199,6 +200,70 @@ export async function run() {
         const brokenSample = (x, y, z, P, Q, R, o) => tileHashRawCell3(inst._seed, inst._jitter, P, Q, R, x, y, z, o);
         if (exactPeriodicity3Holds(brokenSample)) {
             die('T9 control(3D float-wrap): a raw-cell-hash 3D tiling kernel was still exactly periodic -- the 3D periodicity law is blind');
+        }
+    }
+
+    // --- C4 controls: the four new gates proven able to fail (0008) ----------
+
+    // C4 (precision) -- a sampler that fakes distinctness past the precision cliff. The
+    // real kernel collapses (f1===f2) at 2^52; the degraded sampler does NOT, which is
+    // what the T3 degenerate pin rejects. If the degrade were a no-op, the pin is blind.
+    {
+        const inst = createCellular(42, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const real = { f1: 0, f2: 0, id: 0 }, deg = { f1: 0, f2: 0, id: 0 };
+        const MAG = 2 ** 52;
+        inst.cellular2(MAG, MAG, real);
+        degradedPrecisionSample(inst, MAG, MAG, deg);
+        if (real.f1 !== real.f2) {
+            die('T9 control(precision): the real kernel did NOT collapse at 2^52 -- the precision pin premise moved');
+        }
+        if (deg.f1 === deg.f2) {
+            die('T9 control(precision): the degraded sampler still collapsed -- the precision gate cannot fail');
+        }
+    }
+
+    // C4 (oracle) -- a corrupt home-cell-only oracle MUST diverge from the real kernel
+    // over random coords; if it agreed, the oracle sufficiency comparison is vacuous.
+    {
+        const inst = createCellular(1337, { metric: METRIC_EUCLIDEAN, jitter: 1 });
+        const k = { f1: 0, f2: 0, id: 0 }, o = { f1: 0, f2: 0, id: 0 };
+        let s = 5, sawDiv = false;
+        for (let i = 0; i < 20000 && !sawDiv; i++) {
+            s ^= s << 13; s >>>= 0; s ^= s >> 17; s ^= s << 5; s >>>= 0;
+            const x = (s % 65536) / 64, y = (s >>> 8) / 64;
+            inst.cellular2(x, y, k);
+            oracleCorrupt2(METRIC_EUCLIDEAN, inst._seed, inst._jitter, x, y, o);
+            if (k.f1 !== o.f1 || k.f2 !== o.f2 || k.id !== o.id) sawDiv = true;
+        }
+        if (!sawDiv) {
+            die('T9 control(oracle): the corrupt home-cell-only oracle agreed with the real kernel -- the oracle gate cannot fail');
+        }
+    }
+
+    // C4 (matrix) -- the corrupted pin must DIFFER from its input, so the matrix's
+    // equality assertion would catch it (proof the matrix asserts, not merely runs).
+    {
+        for (const v of [0, 1, 3.5, -2.25, NaN, Infinity]) {
+            if (matrixWrongCell(v) === v) {
+                die('T9 control(matrix): matrixWrongCell(' + v + ') is a no-op -- the matrix gate cannot fail');
+            }
+        }
+    }
+
+    // C4 (soak) -- a retained instance must stay live in a tracker (the soak's size-0
+    // assertion would then fail). Mirrors T7's positive control on the soak lane.
+    {
+        const ctrl = createLeakTracker({ name: 'cellular-soak-ctrl' });
+        const kept = createCellular(0x50a4);
+        kept.cellular3(1.5, 2.5, 3.5);
+        ctrl.track(kept, NOOP, 0x50a4);
+        retainForSoak(kept, held);
+        globalThis.gc();
+        await settle();
+        globalThis.gc();
+        await settle();
+        if (ctrl.size() !== 1) {
+            die('T9 control(soak): a retained instance was reported collected -- the soak gate is blind to retention');
         }
     }
 

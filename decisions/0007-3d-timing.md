@@ -8,6 +8,12 @@ Owner: C3
 Depends on: 0001..0006 -- 3D lifts ALL of them to the 27-cell neighbourhood
   unchanged; nothing in 3D is new design, which is exactly why it is a fast-follow.
 
+> Superseded in part by 0008 (2026-08-10, v1.3.0): the 3D neighbourhood is exact at
+> 3x3x3 = 27 cells only for chebyshev; euclid/manhattan widened to 5x5x5 = 125 cells
+> (the 2D radius-2 widening lifted to R^3). The verbatim-lift argument below is
+> unchanged -- the widening lifts too. Read "27-cell scan" as "the per-metric exact
+> neighbourhood (chebyshev 27, euclid/manhattan 125)".
+
 Forward-dated (see 0001). This record fixes three things about the third dimension:
 when it ships, that it is a verbatim lift of the 2D decisions, and that it is NOT a
 dimension-parameterised kernel.
@@ -115,6 +121,22 @@ Apple Silicon; throughput is INDICATIVE, the alloc gate is the contract):
 | `tileableCell3` euclidean (8x8x8) | ~4.2 | 0 |
 | `fillCellField3` plain (24^3, per combo) | ~11.6 Mvoxel/s | 0 |
 | `fillCellField3` tiling (24^3, per combo) | ~5.4 Mvoxel/s | 0 |
+
+Backfill (v1.3.0, 0008): widening euclid/manhattan 3D to the 5x5x5 = 125-cell
+neighbourhood (chebyshev stays 3x3x3 = 27-cell) re-measures (best-of-5, node v26.3.1;
+see `bench/BASELINE.md`):
+
+| probe (v1.3.0) | Mops/s | bytesPerCall |
+| --- | --- | --- |
+| `cellular3` euclidean | ~1.58 | 0 |
+| `cellular3` manhattan | ~1.61 | 0 |
+| `cellular3` chebyshev (unchanged, radius 1) | ~3.75 | 0 |
+| `tileableCell3` euclidean (8x8x8) | ~1.33 | 0 |
+| `fillCellField3` plain (24^3, per combo) | ~2.76 Mvoxel/s | 0 |
+| `fillCellField3` tiling (24^3, per combo) | ~1.56 Mvoxel/s | 0 |
+
+The ~3.0x euclid drop is the 125/27 cell-count ratio; chebyshev is untouched and now
+the fastest 3D metric. Alloc contract unchanged: 0 bytes/call on every 3D surface.
 
 The prediction held: `cellular3` euclidean at ~4.8 Mops/s against the 2D kernel's
 ~14.3 is a 3.0x ratio -- exactly the 27/9 cell-count ratio, the "~3x the per-query

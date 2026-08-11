@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>@zakkster/lite-cellular &middot; Cellular Lab</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+
+        :root {
+            --bg-0: #07090d;
+            --bg-1: #0d1117;
+            --bg-2: #131922;
+            --bg-3: #1a2230;
+            --line: rgba(255, 255, 255, 0.06);
+            --line-strong: rgba(255, 255, 255, 0.14);
+            --text: #d8d6d2;
+            --text-dim: #8b8d94;
+            --text-faint: #555960;
+            --white: #ffffff;
+            --amber: #f5b942;
+            --cyan: #7dd3fc;
+            --magenta: #e879a8;
+            --green: #5fe39f;
+            --glow-amber: 0 0 12px rgba(245, 185, 66, 0.6), 0 0 30px rgba(245, 185, 66, 0.2);
+            --glow-green: 0 0 12px rgba(95, 227, 159, 0.6);
+        }
+
+        html, body { height: 100%; margin: 0; }
+
+        body {
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+            font-size: 0.81rem;
+            line-height: 1.5;
+            color: var(--text);
+            background: var(--bg-0);
+            overflow: hidden;
+            font-feature-settings: "tnum";
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background: radial-gradient(circle at 50% 50%, transparent 0%, rgba(0, 0, 0, 0.4) 60%, rgba(0, 0, 0, 0.8) 100%);
+            z-index: 0;
+        }
+
+        #app { position: relative; z-index: 2; height: 100dvh; display: flex; flex-direction: column; }
+
+        header.top {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            padding: 0.875rem 1.5rem;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(to bottom, var(--bg-1), var(--bg-0));
+        }
+
+        .brand { display: flex; align-items: baseline; gap: 0.75rem; }
+        .brand .mark { color: var(--amber); font-weight: 700; font-size: 1rem; text-shadow: var(--glow-amber); }
+        .brand .pkg { color: var(--text); font-weight: 700; font-size: 0.94rem; }
+        .brand .ver { color: var(--text-faint); font-size: 0.69rem; }
+
+        .tagline {
+            color: var(--text-dim);
+            font-size: 0.69rem;
+            margin-left: auto;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+        }
+        .tagline .dot {
+            display: inline-block;
+            width: 0.44rem;
+            height: 0.44rem;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: var(--glow-green);
+            margin-right: 0.375rem;
+            animation: pulse 2s infinite ease-in-out;
+        }
+
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+
+        main { flex: 1; min-height: 0; display: flex; position: relative; }
+        .stage { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #030408; }
+        canvas { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+
+        .stage-overlay { position: absolute; pointer-events: none; color: var(--text-dim); font-size: 0.69rem; letter-spacing: .05em; }
+        .stage-overlay.tl { top: 0.875rem; left: 1.125rem; }
+        .stage-overlay.br { bottom: 0.875rem; right: 1.125rem; text-align: right; }
+        .stage-overlay .big { display: block; color: var(--green); font-size: 1.375rem; font-weight: 500; font-variant-numeric: tabular-nums; text-shadow: var(--glow-green); }
+        .stage-overlay .label { font-size: 0.56rem; letter-spacing: .14em; text-transform: uppercase; color: var(--text-faint); }
+
+        .panel { width: 20rem; border-left: 1px solid var(--line); background: var(--bg-1); display: flex; flex-direction: column; overflow-y: auto; }
+        .panel-head { padding: 1rem 1.25rem 0.5rem; font-size: 0.625rem; letter-spacing: .18em; text-transform: uppercase; color: var(--text-faint); border-bottom: 1px solid var(--line); }
+        .panel section { padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+        .panel section h3 { margin: 0 0 0.75rem; font-size: 0.625rem; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--green); }
+        .help-line { color: var(--text-dim); font-size: 0.69rem; margin: 0 0 0.75rem; line-height: 1.6; }
+        .help-line code { color: var(--green); }
+
+        .seg { display: flex; gap: 2px; background: var(--bg-2); border: 1px solid var(--line); padding: 2px; }
+        .seg button {
+            flex: 1;
+            background: var(--bg-3);
+            border: 1px solid var(--line);
+            color: var(--text-dim);
+            padding: 0.375rem 0.5rem;
+            font-family: inherit;
+            font-size: 0.625rem;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all .12s;
+        }
+        .seg button[aria-pressed="true"] { background: var(--green); color: var(--bg-0); border-color: var(--green); font-weight: 700; }
+        @media (hover: hover) { .seg button:hover { color: var(--text); } }
+
+        .field { margin-bottom: 0.75rem; }
+        .field:last-child { margin-bottom: 0; }
+        .field label { display: flex; justify-content: space-between; font-size: 0.625rem; letter-spacing: .08em; color: var(--text-faint); text-transform: uppercase; margin-bottom: 0.25rem; }
+        .field input[type="range"] { width: 100%; accent-color: var(--green); }
+        .field-value { color: var(--green); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+        .toggles { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+        button.btn {
+            font-family: inherit;
+            font-size: 0.625rem;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            background: var(--bg-3);
+            color: var(--text);
+            border: 1px solid var(--line-strong);
+            padding: 0.5rem 0.75rem;
+            cursor: pointer;
+            transition: all .12s;
+        }
+        button.btn[aria-pressed="true"] { background: var(--bg-2); color: var(--green); border-color: var(--green); font-weight: 700; }
+        @media (hover: hover) { button.btn:hover { border-color: var(--green); color: var(--green); } }
+
+        .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 0.375rem; }
+        .metric { background: var(--bg-2); border: 1px solid var(--line); padding: 0.5rem 0.625rem; }
+        .metric .k { font-size: 0.56rem; letter-spacing: .12em; color: var(--text-faint); text-transform: uppercase; }
+        .metric .v { font-size: 1rem; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; margin-top: 2px; }
+        .metric .v.green { color: var(--green); }
+        .metric .v.amber { color: var(--amber); }
+        .metric .v.cyan { color: var(--cyan); }
+        .badge-alloc { color: var(--green); font-weight: 700; text-shadow: var(--glow-green); }
+    </style>
+</head>
+<body>
+<div id="app">
+    <header class="top">
+        <div class="brand">
+            <span class="mark">&#9678;</span>
+            <span class="pkg">@zakkster/lite-cellular</span>
+            <span class="ver" id="c-ver">v1.3.0</span>
+        </div>
+        <div class="tagline"><span class="dot"></span>zero-GC worley field &middot; seeded once, never reallocated</div>
+    </header>
+
+    <main>
+        <div class="stage" id="c-stage">
+            <canvas id="c-canvas"></canvas>
+            <div class="stage-overlay tl"><span class="label" id="c-mode">euclidean &middot; f1</span></div>
+            <div class="stage-overlay br">
+                <span class="label">allocation per frame</span>
+                <span class="big badge-alloc" id="c-alloc">0 B</span>
+            </div>
+        </div>
+        <aside class="panel">
+            <div class="panel-head">cellular lab &middot; live field bake</div>
+            <section>
+                <p class="help-line">
+                    Every frame bakes a whole cellular field with <code>fillCellField2</code>
+                    into ONE caller-owned <code>Float64Array</code> (allocated at init, never
+                    per frame) -&gt; a reused <code>ImageData</code> -&gt; one
+                    <code>putImageData</code>. The <code>0 B/frame</code> badge is the thesis.
+                </p>
+            </section>
+            <section>
+                <h3>Metric</h3>
+                <div class="seg" id="c-metric">
+                    <button data-m="0" aria-pressed="true">Euclidean</button>
+                    <button data-m="1">Manhattan</button>
+                    <button data-m="2">Chebyshev</button>
+                </div>
+            </section>
+            <section>
+                <h3>Combo</h3>
+                <div class="seg" id="c-combo">
+                    <button data-c="f1" aria-pressed="true">F1 blobs</button>
+                    <button data-c="f2-f1">F2-F1 cracks</button>
+                    <button data-c="f2">F2 cells</button>
+                </div>
+            </section>
+            <section>
+                <h3>Field</h3>
+                <div class="field">
+                    <label>jitter <span class="field-value" id="c-jit-v">1.00</span></label>
+                    <input type="range" id="c-jit" min="0" max="100" step="1" value="100">
+                </div>
+                <div class="field">
+                    <label>scale <span class="field-value" id="c-scale-v">6.0</span></label>
+                    <input type="range" id="c-scale" min="10" max="200" step="1" value="60">
+                </div>
+                <div class="field">
+                    <label>seed <span class="field-value" id="c-seed-v">1337</span></label>
+                    <input type="range" id="c-seed" min="0" max="4096" step="1" value="1337">
+                </div>
+            </section>
+            <section>
+                <h3>Mode</h3>
+                <div class="toggles">
+                    <button class="btn" id="c-normalize" aria-pressed="true">normalize</button>
+                    <button class="btn" id="c-tiling" aria-pressed="false">tiling 3x3</button>
+                    <button class="btn" id="c-3d" aria-pressed="false">3D slice</button>
+                </div>
+            </section>
+            <section>
+                <h3>Telemetry</h3>
+                <div class="metrics">
+                    <div class="metric"><div class="k">fps</div><div class="v" id="c-fps">60</div></div>
+                    <div class="metric"><div class="k">bake ms</div><div class="v cyan" id="c-bake">0.0</div></div>
+                    <div class="metric"><div class="k">alloc/frame</div><div class="v green" id="c-alloc2">0 B</div></div>
+                    <div class="metric"><div class="k">field px</div><div class="v amber" id="c-px">0</div></div>
+                </div>
+            </section>
+        </aside>
+    </main>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-cellular": "https://esm.sh/@zakkster/lite-cellular@1.3.0"
+  }
+}
+</script>
+
+<script type="module">
+    import { createCellular, VERSION } from "@zakkster/lite-cellular";
+
+    // Optional ecosystem note: an OKLCH ramp could be baked once with
+    // `@zakkster/lite-color-lerp` into the palette LUT below -- they compose at the app
+    // layer. The base demo stays cellular-only so it runs on ONE import.
+
+    const $ = (id) => document.getElementById(id);
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+    const RES = 180;                 // square bake buffer edge, fixed at init.
+    const N = RES * RES;
+
+    const $canvas = $("c-canvas"), $stage = $("c-stage");
+    const $metric = $("c-metric"), $combo = $("c-combo");
+    const $jit = $("c-jit"), $jitV = $("c-jit-v");
+    const $scale = $("c-scale"), $scaleV = $("c-scale-v");
+    const $seed = $("c-seed"), $seedV = $("c-seed-v");
+    const $normalize = $("c-normalize"), $tiling = $("c-tiling"), $d3 = $("c-3d");
+    const $mode = $("c-mode"), $alloc = $("c-alloc"), $alloc2 = $("c-alloc2");
+    const $fps = $("c-fps"), $bake = $("c-bake"), $px = $("c-px");
+    $("c-ver").textContent = "v" + VERSION;
+
+    // -- buffers allocated ONCE at init, never per frame (the zero-GC thesis) ----
+    const field = new Float64Array(N);              // fillCellField2 destination
+    const off = document.createElement("canvas");
+    off.width = RES; off.height = RES;
+    const offCtx = off.getContext("2d");
+    const img = offCtx.createImageData(RES, RES);   // reused every frame
+    const img32 = new Uint32Array(img.data.buffer); // Uint32 view over the pixel bytes
+    const palette = new Uint32Array(256);           // 256-entry colour LUT
+    const ctx = $canvas.getContext("2d", { alpha: false });
+
+    // Build the palette ONCE: a dark -> teal -> green -> cream ramp. Uint32 is written
+    // little-endian as 0xAABBGGRR (the byte order of the RGBA ImageData buffer).
+    (function buildPalette() {
+        const stops = [
+            [0.00, 8, 12, 20], [0.35, 20, 70, 74], [0.62, 95, 227, 159],
+            [0.85, 210, 240, 200], [1.00, 245, 230, 200],
+        ];
+        for (let i = 0; i < 256; i++) {
+            const t = i / 255;
+            let a = stops[0], b = stops[stops.length - 1];
+            for (let s = 0; s < stops.length - 1; s++) {
+                if (t >= stops[s][0] && t <= stops[s + 1][0]) { a = stops[s]; b = stops[s + 1]; break; }
+            }
+            const span = b[0] - a[0] || 1, k = (t - a[0]) / span;
+            const r = (a[1] + (b[1] - a[1]) * k) | 0;
+            const g = (a[2] + (b[2] - a[2]) * k) | 0;
+            const bl = (a[3] + (b[3] - a[3]) * k) | 0;
+            palette[i] = (255 << 24) | (bl << 16) | (g << 8) | r;
+        }
+    })();
+
+    // -- state (hooked into the initial control values, not hardcoded twice) -----
+    let metric = +$metric.querySelector('[aria-pressed="true"]').dataset.m;
+    let combo = $combo.querySelector('[aria-pressed="true"]').dataset.c;
+    let jitter = +$jit.value / 100;
+    let scaleUI = +$scale.value / 10;      // world span slider (cells across the field)
+    let seed = +$seed.value;
+    let normalize = $normalize.getAttribute("aria-pressed") === "true";
+    let tiling = $tiling.getAttribute("aria-pressed") === "true";
+    let is3D = $d3.getAttribute("aria-pressed") === "true";
+    let oz = 0;
+
+    let inst = createCellular(seed, { metric, jitter });   // metric is fixed per instance
+
+    let W = 1, H = 1;
+    let running = false, raf = 0;
+    let fpsT = performance.now(), fpsN = 0, bakeMs = 0, tick = 0;
+    // dev heap self-check across ~600 frames (Chrome exposes performance.memory).
+    const mem = performance.memory || null;
+    let heapBase = 0, heapFrame = 0, heapChecked = false;
+
+    const TILE_P = 4;   // tiling: a 4-cell tile baked into the square buffer.
+
+    // THREE persistent opts structs, allocated ONCE at init and mutated in place each
+    // frame -- never a per-frame object literal (that would escape into fillCellField
+    // and allocate, contradicting the 0 B/frame badge). They are kept SEPARATE on
+    // purpose: periodX/periodY are meaningful keys, so a plain bake must NOT reuse a
+    // struct still carrying a tiling period (fillCellField2 would silently tile). Each
+    // mode owns its own struct.
+    const optsPlain = { combo, jitter, normalize, scale: 0 };
+    const optsTiling = { combo, jitter, normalize, scale: 0, periodX: TILE_P, periodY: TILE_P };
+    const opts3D = { combo, jitter, normalize, scale: 0, oz: 0 };
+
+    function bake() {
+        // Mutate the reused struct for the active mode -- zero allocation here. The
+        // RES-wide buffer spans `scaleUI` cells (plain/3D) or exactly TILE_P cells
+        // (tiling, so the square buffer IS one tile).
+        if (tiling) {
+            optsTiling.combo = combo; optsTiling.jitter = jitter;
+            optsTiling.normalize = normalize; optsTiling.scale = TILE_P / RES;
+            inst.fillCellField2(field, RES, RES, optsTiling);
+        } else if (is3D) {
+            const step = scaleUI / RES;
+            opts3D.combo = combo; opts3D.jitter = jitter;
+            opts3D.normalize = normalize; opts3D.scale = step; opts3D.oz = oz;
+            inst.fillCellField3(field, RES, RES, 1, opts3D);
+            oz += step * 0.6;
+        } else {
+            optsPlain.combo = combo; optsPlain.jitter = jitter;
+            optsPlain.normalize = normalize; optsPlain.scale = scaleUI / RES;
+            inst.fillCellField2(field, RES, RES, optsPlain);
+        }
+    }
+
+    function paint() {
+        // Map the field into the reused Uint32 pixel view via the palette LUT. When
+        // normalize is off the raw distance is scaled by a fixed view gain and clamped.
+        const gain = normalize ? 1 : (combo === "f2-f1" ? 1.6 : combo === "f2" ? 0.62 : 0.9);
+        for (let i = 0; i < N; i++) {
+            let t = field[i] * gain;
+            if (t < 0) t = 0; else if (t > 1) t = 1;
+            img32[i] = palette[(t * 255) | 0];
+        }
+        offCtx.putImageData(img, 0, 0);
+        if (tiling) {
+            const tw = W / 3, th = H / 3;
+            for (let ty = 0; ty < 3; ty++) {
+                for (let tx = 0; tx < 3; tx++) ctx.drawImage(off, tx * tw, ty * th, tw, th);
+            }
+            // Seam guide overlay: if the wrap is exact, the seam step equals an interior
+            // step and the guide lines sit over invisible seams (0006).
+            ctx.strokeStyle = "rgba(245,185,66,0.35)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(tw, 0); ctx.lineTo(tw, H); ctx.moveTo(tw * 2, 0); ctx.lineTo(tw * 2, H);
+            ctx.moveTo(0, th); ctx.lineTo(W, th); ctx.moveTo(0, th * 2); ctx.lineTo(W, th * 2);
+            ctx.stroke();
+        } else {
+            ctx.drawImage(off, 0, 0, W, H);
+        }
+    }
+
+    function frame() {
+        if (!running) return;
+        const t0 = performance.now();
+        bake();
+        bakeMs = performance.now() - t0;
+        paint();
+
+        fpsN++;
+        tick++;
+        if ((tick & 7) === 0) {
+            const now = performance.now();
+            if (now - fpsT >= 480) {
+                $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+                fpsT = now; fpsN = 0;
+            }
+            $bake.textContent = bakeMs.toFixed(1);
+            $px.textContent = N;
+        }
+
+        // Dev heap self-check: sample once at ~frame 60, assert flat at ~frame 660.
+        // The threshold (256 KB) is tight: it absorbs JIT/telemetry-string noise but
+        // would trip on a reintroduced per-frame opts literal (~600 small objects over
+        // 600 frames is well over a MB before GC).
+        if (mem) {
+            heapFrame++;
+            if (heapFrame === 60) heapBase = mem.usedJSHeapSize;
+            else if (heapFrame === 660 && !heapChecked) {
+                heapChecked = true;
+                const grew = mem.usedJSHeapSize - heapBase;
+                if (grew > 256 * 1024) {
+                    console.warn("[cellular-lab] heap grew " + grew + " B across 600 frames -- a per-frame allocation slipped in");
+                } else {
+                    console.log("[cellular-lab] heap flat across 600 frames (" + grew + " B) -- 0 B/frame holds");
+                }
+            }
+        }
+
+        raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+        const r = $canvas.getBoundingClientRect();
+        W = Math.max(1, Math.floor(r.width * DPR));
+        H = Math.max(1, Math.floor(r.height * DPR));
+        $canvas.width = W;
+        $canvas.height = H;
+        ctx.imageSmoothingEnabled = false;
+    }
+
+    function refreshMode() {
+        const mnames = ["euclidean", "manhattan", "chebyshev"];
+        $mode.textContent = mnames[metric] + " - " + combo +
+            (tiling ? " - tiling" : is3D ? " - 3D" : "");
+    }
+
+    // -- controls (AbortController-scoped; torn down on pagehide) -----------------
+    const ac = new AbortController();
+    const sig = ac.signal;
+
+    $metric.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-m]");
+        if (!b) return;
+        metric = +b.dataset.m;
+        for (const c of $metric.children) c.setAttribute("aria-pressed", c === b ? "true" : "false");
+        inst = createCellular(seed, { metric, jitter });   // metric is immutable per instance
+        refreshMode();
+    }, { signal: sig });
+
+    $combo.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-c]");
+        if (!b) return;
+        combo = b.dataset.c;
+        for (const c of $combo.children) c.setAttribute("aria-pressed", c === b ? "true" : "false");
+        refreshMode();
+    }, { signal: sig });
+
+    $jit.addEventListener("input", () => { jitter = +$jit.value / 100; $jitV.textContent = jitter.toFixed(2); }, { signal: sig });
+    $scale.addEventListener("input", () => { scaleUI = +$scale.value / 10; $scaleV.textContent = scaleUI.toFixed(1); }, { signal: sig });
+    $seed.addEventListener("input", () => {
+        seed = +$seed.value; $seedV.textContent = seed;
+        inst.reseed(seed);                                  // in place, zero alloc
+    }, { signal: sig });
+
+    $normalize.addEventListener("click", () => {
+        normalize = !normalize;
+        $normalize.setAttribute("aria-pressed", normalize ? "true" : "false");
+    }, { signal: sig });
+    $tiling.addEventListener("click", () => {
+        tiling = !tiling;
+        if (tiling) { is3D = false; $d3.setAttribute("aria-pressed", "false"); }
+        $tiling.setAttribute("aria-pressed", tiling ? "true" : "false");
+        refreshMode();
+    }, { signal: sig });
+    $d3.addEventListener("click", () => {
+        is3D = !is3D;
+        if (is3D) { tiling = false; $tiling.setAttribute("aria-pressed", "false"); }
+        $d3.setAttribute("aria-pressed", is3D ? "true" : "false");
+        refreshMode();
+    }, { signal: sig });
+
+    window.addEventListener("resize", resize, { signal: sig });
+    window.addEventListener("pagehide", () => {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+        ac.abort();
+    }, { signal: sig });
+
+    // Hook initial UI text from state, then start.
+    $jitV.textContent = jitter.toFixed(2);
+    $scaleV.textContent = scaleUI.toFixed(1);
+    $seedV.textContent = seed;
+    $alloc.textContent = "0 B"; $alloc2.textContent = "0 B";
+    refreshMode();
+    resize();
+    running = true;
+    raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

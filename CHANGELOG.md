@@ -3,6 +3,57 @@
 All notable changes to `@zakkster/lite-cellular` are documented here.
 The format follows Keep a Changelog; this package adheres to SemVer.
 
+## [1.3.0] - 2026-08-10
+
+Exact per-metric neighbourhood + exhaustive hardening + the live demo (session C4).
+
+### Changed -- BEHAVIOUR (the headline; `decisions/0008`)
+
+- The fixed neighbourhood is now EXACT per metric. C4's own sufficiency oracle
+  uncovered that the 3x3 / 3x3x3 scan is NOT sufficient for euclidean or manhattan --
+  an L1/L2 ball can reach a feature point two cells away, so the true nearest was
+  rarely missed (measured miss-rate vs a wide brute-force oracle at jitter 1:
+  euclid ~2e-6, manhattan ~2e-4 and up to ~0.43 cell off). Only chebyshev (L-inf) was
+  ever sufficient at radius 1.
+- FIX: the eight euclidean/manhattan kernels (2D + 3D, plain + tileable) widen from a
+  radius-1 loop to radius 2 -- 9 -> 25 cells (2D), 27 -> 125 (3D). This is PROVEN
+  exact: scan radius 2 == radius 3 == radius 4 bit-for-bit over millions of ops, so
+  the true nearest never sits farther than two cells for L1/L2 under `jitter <= 1`.
+  The miss-rate goes to 0. The four chebyshev kernels are BYTE-UNCHANGED (radius 1 is
+  already exact); their two goldens (`5e5cbfa6`, `1682d095`) re-derive byte-identical.
+- COST: euclid/manhattan queries and bakes are ~2.78x (2D) / ~4.63x (3D) slower by
+  cell count; chebyshev is unchanged; every path is still zero-allocation. See
+  `bench/BASELINE.md`.
+- MINOR, not patch: the euclid/manhattan kernels change behaviour in the rare cases.
+  The four euclid/manhattan golden digests re-derive from the widened kernel (their
+  committed values are unchanged only because the sample COORDS miss the rare cases --
+  the goldens pin the common case, the new T-ORACLE tier proves the rare one).
+
+### Fixed -- docs
+
+- Corrected the "the fixed 3x3 neighbourhood is guaranteed to contain the true f1/f2"
+  overclaim in the README, `llms.txt`, `Cellular.d.ts`, and decisions 0001/0002/0003/
+  0007 (each now points to 0008). The accurate statement is per metric: chebyshev
+  exact in 3x3 / 3x3x3, euclid/manhattan in 5x5 / 5x5x5. The tileable exact-`===`
+  periodicity claim (0006) is a different property and is unchanged.
+
+### Added -- hardening, benchmark, demo (no API)
+
+- `test/torture/t-matrix.mjs` -- the full metric x combo x surface x dim cross-product
+  edge-case matrix; every cell a decided outcome (throw / documented value / limit).
+- `test/torture/t-oracle.mjs` -- the sufficiency proof: the shipped kernel equals a
+  radius-3 brute-force scan bit-for-bit over 100k+ ops, all metrics, jitter swept
+  `[0,1]`. The `CELLULAR_TORTURE_BREAK_PRECISION` control narrows the kernel back to
+  radius 1 and must make it fail.
+- T3 world-scale precision limit pinned + documented; T7 soak extended to 65536
+  build/drop cycles (heap flat across cycles, no retained instance); four new T9
+  break controls, each exits non-zero.
+- `bench/BASELINE.md` -- best-of-5 across the whole surface, `bytesPerOp: 0` on every
+  steady-state probe; the decision Measured tables backfilled.
+- `demo/cellular-lab.html` -- a live, zero-allocation-per-frame showcase (metric,
+  combo, jitter, seed, exact 3x3 tiling, animated 3D slice). Repo-only, NOT in the
+  published tarball (`files[]` unchanged; `npm pack` still 7 files).
+
 ## [1.2.0] - 2026-08-09
 
 The 3D lift (session C3): the whole 2D texture surface carried into three dimensions

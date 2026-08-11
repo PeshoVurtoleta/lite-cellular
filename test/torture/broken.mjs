@@ -199,3 +199,75 @@ export function tileHashRawCell3(seed, jitter, periodX, periodY, periodZ, x, y, 
     out.id = id;
     return out;
 }
+
+// --- C4 controls: the four new gates each proven able to fail -----------------
+// Each is the exact anti-pattern the matching C4 tier forbids, written so the tier's
+// named assertion MUST reject it. Imported by T3 (precision), t-oracle (oracle),
+// t-matrix (matrix), and T7 (soak), plus T9 which runs each in-process on every plain
+// run. A gate that cannot fail is decorative.
+
+/**
+ * C4 anti-pattern (precision): a `cellular2` wrapper that SILENTLY fakes distinctness
+ * past the world-scale precision limit. Where the real kernel's +/-1 cell offset falls
+ * below the float64 ULP and the neighbourhood collapses onto one cell (`f1 === f2`),
+ * this control nudges `f2` so `f1 < f2`, pretending the field is still well-defined --
+ * a silent precision cliff instead of the pinned, documented collapse. The T3 degenerate
+ * pin (`f1 === f2` at 2^52) must reject it.
+ * @param {import('../../Cellular.js').Cellular} inst
+ */
+export function degradedPrecisionSample(inst, x, y, out) {
+    inst.cellular2(x, y, out);
+    if (out.f1 === out.f2) {
+        // Fake a distinct second feature where there is none (the silent-degrade bug).
+        out.f2 = out.f1 + (out.f1 > 0 ? out.f1 : 1) * (2 ** -30) + 1;
+    }
+    return out;
+}
+
+/**
+ * C4 anti-pattern (oracle): a corrupted brute oracle that scans ONLY the home cell
+ * (1x1) instead of a wide block -- i.e. it rubber-stamps a "wrong kernel" that never
+ * looks at its neighbours. It diverges from the real 9-cell kernel wherever the nearest
+ * feature point (or the true F2) sits in a neighbour cell, which is the common case, so
+ * the t-oracle comparison MUST detect the divergence. If it did not, the oracle tier
+ * would be vacuous. Uses the verbatim hashes above so ONLY the block radius differs.
+ * @param {number} metric 0 euclid / 1 manhattan / 2 chebyshev
+ */
+export function oracleCorrupt2(metric, seed, jitter, x, y, out) {
+    const ix = Math.floor(x), iy = Math.floor(y);
+    const h = _hash2(ix, iy, seed);
+    const u = h / _UINT32;
+    const v = _hash2b(ix, iy, seed) / _UINT32;
+    const fx = ix + 0.5 + jitter * (u - 0.5);
+    const fy = iy + 0.5 + jitter * (v - 0.5);
+    const dx = fx - x, dy = fy - y;
+    const d = metric === 1 ? Math.abs(dx) + Math.abs(dy)
+            : metric === 2 ? Math.max(Math.abs(dx), Math.abs(dy))
+            : Math.sqrt(dx * dx + dy * dy);
+    out.f1 = d; out.f2 = d; out.id = h | 0;   // home-cell-only: f2 == f1 (no neighbour)
+    return out;
+}
+
+/**
+ * C4 anti-pattern (matrix): corrupt a pinned matrix answer so the matrix's named
+ * equality assertion fails. A cell that "runs" but never asserts would pass a wrong
+ * pin; feeding this corrupted expectation proves the assertion bites. Deterministic and
+ * always DIFFERENT from its input (so the corruption is real, never a no-op).
+ */
+export function matrixWrongCell(v) {
+    if (typeof v === 'number') {
+        if (Number.isNaN(v)) return 0;           // NaN -> a finite value (guaranteed !==)
+        return Number.isFinite(v) ? v + 1 : 0;   // Inf -> finite; finite -> +1
+    }
+    return v ? 0 : 1;
+}
+
+/**
+ * C4 anti-pattern (soak): retain a dropped-instance in a caller-owned sink so it
+ * OUTLIVES its drop. The 65536-cycle soak's `tracker.size() === 0` assertion must then
+ * fail (the leak tracker sees the survivor). The sink is external state; nothing here
+ * closes over the tracked instance in a cleanup or tag (that would defeat finalization).
+ */
+export function retainForSoak(inst, sink) {
+    sink.push(inst);
+}

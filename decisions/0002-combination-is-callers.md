@@ -7,6 +7,11 @@ Depends on: 0001-metric-selection (same "no decision inside the hot loop" princi
 Depended on by: 0005-field-baker-ownership (the bake is the ONE sanctioned place a
   `combo` option lives, precisely because it is not the per-query hot path)
 
+> Superseded in part by 0008 (2026-08-10, v1.3.0): `f2` is still computed in the SAME
+> scan as `f1` for one extra `else if`, but that scan is now the per-metric exact
+> neighbourhood (chebyshev 3x3, euclid/manhattan 5x5) -- the return shape {f1,f2,id} and
+> the caller-does-the-subtraction rule below are unchanged.
+
 Forward-dated on purpose (see 0001). This record fixes the return shape of the
 per-query kernel and, just as importantly, what does **not** go into it.
 

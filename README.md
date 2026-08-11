@@ -19,7 +19,7 @@
 
 ## The cellular half the noise ecosystem was missing
 
-`@zakkster/lite-noise` gives you gradient (Simplex/Perlin) noise -- smooth, band-limited value fields. It does not give you the OTHER canonical procedural primitive: **cellular / Worley noise**, the distance-to-nearest-feature field that makes cells, cracks, scales, stone, and Voronoi region masks. `lite-cellular` is that half, built to the same bar: zero runtime dependencies, single file, and **zero allocation on every query** -- the result is written into a struct you own, and the 3x3 neighbourhood scan never touches the heap.
+`@zakkster/lite-noise` gives you gradient (Simplex/Perlin) noise -- smooth, band-limited value fields. It does not give you the OTHER canonical procedural primitive: **cellular / Worley noise**, the distance-to-nearest-feature field that makes cells, cracks, scales, stone, and Voronoi region masks. `lite-cellular` is that half, built to the same bar: zero runtime dependencies, single file, and **zero allocation on every query** -- the result is written into a struct you own, and the neighbourhood scan never touches the heap.
 
 ```bash
 npm i @zakkster/lite-cellular
@@ -92,17 +92,23 @@ construction so the loop stays monomorphic and branch-free.
 <details>
 <summary><b>The core surface</b> -- what a query actually does</summary>
 
-A query at `(x, y)` finds the integer cell `(floor(x), floor(y))` and scans the
-fixed 3x3 neighbourhood of cells around it. Each cell deterministically scatters
-one feature point at `cell + 0.5 + jitter*(u - 0.5)`, where `u`/`v` in `[0,1)` come
-from a hash of the integer cell coordinates and the seed. For each of the 9 points
-the kernel computes the distance under this instance's metric and keeps the two
-smallest (`f1`, `f2`) plus the primary hash of the F1 owner (`id`).
+A query at `(x, y)` finds the integer cell `(floor(x), floor(y))` and scans a fixed
+neighbourhood of cells around it. Each cell deterministically scatters one feature
+point at `cell + 0.5 + jitter*(u - 0.5)`, where `u`/`v` in `[0,1)` come from a hash
+of the integer cell coordinates and the seed. For each point in the neighbourhood the
+kernel computes the distance under this instance's metric and keeps the two smallest
+(`f1`, `f2`) plus the primary hash of the F1 owner (`id`).
 
-`jitter <= 1` is a correctness precondition, not a cosmetic knob: it keeps every
-feature point inside its home cell, which is exactly the condition under which the
-fixed 3x3 neighbourhood is guaranteed to contain the TRUE nearest and second-nearest
-points. `jitter > 1` throws (fail-closed) rather than silently voiding that
+The neighbourhood radius is EXACT per metric (`decisions/0008`), and this is the one
+subtlety worth internalising. Under **chebyshev** (L-inf) the true nearest and
+second-nearest always lie in the immediate 3x3 / 3x3x3 block, so that is what the
+chebyshev kernel scans. Under **euclidean** (L2) or **manhattan** (L1) a feature point
+up to TWO cells away can be nearer -- an L1/L2 ball reaches past the immediate ring
+where an L-inf ball never does -- so those kernels scan the wider 5x5 / 5x5x5 block,
+which is provably sufficient. `jitter <= 1` is the precondition that ties it together:
+it keeps every feature point inside its home cell, the condition under which the fixed
+neighbourhood (3x3 for chebyshev, 5x5 for euclid/manhattan) is guaranteed to contain
+the true `f1`/`f2`. `jitter > 1` throws (fail-closed) rather than silently voiding that
 guarantee near cell corners.
 
 The metric is dropped from the loop entirely: there are three metric-specific
@@ -140,9 +146,9 @@ class Cellular {
   // periodX/periodY for a seamless tile. Fail closed on bad dst/w/h/combo. See 0005.
   fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: FillCellFieldOptions): T;
 
-  // --- 3D (v1.2.0): the 27-cell lift of the three methods above. See decisions/0007.
-  // Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell scan. Same {f1,f2,id} shape,
-  // ~3x the per-query cost by cell count, same zero-alloc shape. Throws on non-finite x/y/z.
+  // --- 3D (v1.2.0): the volumetric lift of the three methods above. See decisions/0007, 0008.
+  // Sample the 3D field at (x, y, z). Same {f1,f2,id} shape; chebyshev scans 3x3x3 = 27
+  // cells, euclid/manhattan the exact 5x5x5 = 125 (0008), same zero-alloc shape. Throws on non-finite x/y/z.
   cellular3(x: number, y: number, z: number, out?: CellularResult): CellularResult;
   // Exactly-tileable 3D sample: cellular3 with the integer cell coords wrapped mod the
   // period on ALL THREE axes. periodX/periodY/periodZ are required positive integers.
@@ -302,7 +308,8 @@ createCellular(42).fillCellField2(tile, W, W, { combo: 'f1', scale: P / W, perio
 
 ## 3D -- the same surface, in a volume
 
-v1.2.0 lifts the whole 2D surface into 3D over the **3x3x3 = 27-cell** neighbourhood.
+v1.2.0 lifts the whole 2D surface into 3D over the 27-cell neighbourhood (widened to
+the exact **5x5x5 = 125-cell** block for euclid/manhattan in v1.3.0; chebyshev stays 27).
 `cellular3(x, y, z)`, `tileableCell3(x, y, z, periodX, periodY, periodZ)`, and
 `fillCellField3(dst, w, h, d, opts)` are a **verbatim lift** of the 2D methods -- the
 same `{f1,f2,id}` shape, the same three metrics bound once, the same jitter and `id`
@@ -450,9 +457,9 @@ raw-cell-hash tiling kernel that is not exactly periodic).
 - **Not a flow-field source.** `f1` has derivative discontinuities at cell
   boundaries by construction; it cannot feed an analytic curl/flow field.
 - **Not cryptographic.** The hash is for reproducible scatter, not security.
-- **Not 4D, ever.** 2D (9-cell) and 3D (27-cell) ship; 4D (81 cells) is a different
-  cost regime a 3D field plus a time offset already serves -- permanently out of scope
-  (`decisions/0007`). `combo` lives ONLY in the bake, never per query.
+- **Not 4D, ever.** 2D and 3D ship (chebyshev 9 / 27 cells, euclid/manhattan the exact
+  25 / 125); 4D is a different cost regime a 3D field plus a time offset already serves
+  -- permanently out of scope (`decisions/0007`). `combo` lives ONLY in the bake, never per query.
 - **Not precise past ~2^52.** Beyond the float64 integer limit the neighbourhood
   degenerates (the pinned world-scale limit) -- per axis, in 2D and 3D alike.
 

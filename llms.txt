@@ -1,10 +1,10 @@
 # @zakkster/lite-cellular
 
-> Zero-GC Worley/cellular noise for 2D and 3D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; v1.1.0 adds the zero-alloc field baker `fillCellField2` and the EXACTLY-seamless `tileableCell2`; v1.2.0 LIFTS the whole surface into 3D (`cellular3` / `fillCellField3` / `tileableCell3`, the 27-cell neighbourhood). Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
+> Zero-GC Worley/cellular noise for 2D and 3D. `cellular2(x, y, out?)` returns the two nearest feature-point distances `f1`/`f2` and the F1 owner's cell `id`, written into a caller-owned out-struct -- **no allocation on the query path.** v1.0.0 ships the three distance metrics (euclidean/manhattan/chebyshev, fixed at instance creation) and the module free-function surface; v1.1.0 adds the zero-alloc field baker `fillCellField2` and the EXACTLY-seamless `tileableCell2`; v1.2.0 LIFTS the whole surface into 3D (`cellular3` / `fillCellField3` / `tileableCell3`); v1.3.0 makes the neighbourhood EXACT per metric (chebyshev 3x3/3x3x3, euclid/manhattan 5x5/5x5x5 -- an L1/L2 ball reaches a feature two cells away; decisions/0008). Sibling of `@zakkster/lite-noise` (gradient noise); the two compose at the app layer, never in the same file.
 
 ## API
 
-Named exports (v1.2.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
+Named exports (v1.3.0): `createCellular`, `Cellular`, `cellular2`, `seedCellular`,
 `VERSION`, `METRIC_EUCLIDEAN`, `METRIC_MANHATTAN`, `METRIC_CHEBYSHEV`. The C2 methods
 (`fillCellField2`, `tileableCell2`) and the C3 3D methods (`cellular3`,
 `fillCellField3`, `tileableCell3`) are INSTANCE methods -- a bake wants metric +
@@ -66,9 +66,9 @@ class Cellular {
     //                             omit both for a plain field
     fillCellField2<T extends Float64Array | Float32Array>(dst: T, w: number, h: number, opts?: object): T;
 
-    // --- 3D (v1.2.0): the 27-cell lift of the three methods above (decisions/0007) ---
-    // Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell scan. Same { f1, f2, id }
-    // shape plus depth, in this instance's metric. ~3x the per-query cost by cell count,
+    // --- 3D (v1.2.0): the 3D lift of the three methods above (decisions/0007) ---
+    // Sample the 3D field at (x, y, z): chebyshev 3x3x3 = 27 cells, euclid/manhattan
+    // 5x5x5 = 125 cells (0008). Same { f1, f2, id } shape plus depth, this instance's metric.
     // same zero-alloc shape. Writes into `out` if given (returns it) else the reused
     // struct. THROWS on non-finite x, y, or z. Instance-only (no module 3D surface).
     cellular3(x: number, y: number, z: number, out?: CellularResult): CellularResult;
@@ -110,14 +110,17 @@ distance line: euclidean `sqrt(dx*dx+dy*dy)` (squared in the loop, two sqrts off
 it), manhattan `|dx|+|dy|`, chebyshev `max(|dx|,|dy|)` -- all in LINEAR units, so
 `cheby.f <= euclid.f <= manhattan.f` holds pointwise for f1 and f2, and `f2 - f1`
 stays usable as a mask/displacement. The metric is dropped from the hot loop and
-bound once as `this._kernel`, so the 3x3 scan is monomorphic and branch-free.
+bound once as `this._kernel`, so the neighbourhood scan is monomorphic and branch-free.
 
 Each grid cell scatters one feature point at `cell + 0.5 + jitter*(u-0.5)` where
 `u`/`v` in `[0,1)` come from a hash of the integer cell coords + seed. `jitter` in
 `[0,1]`: `0` is the exact grid of cell centres, `1` is full Worley. The bound is a
 correctness precondition -- `jitter <= 1` keeps every feature point inside its cell,
-which is what makes the fixed 3x3 neighbourhood scan guaranteed to contain the true
-`f1`/`f2`.
+which is what makes the neighbourhood scan guaranteed to contain the true `f1`/`f2` at
+each metric's EXACT radius (0008): chebyshev is exact in the 3x3 / 3x3x3 neighbourhood,
+but an L1/L2 unit-cell ball can reach a feature two cells away, so euclidean and
+manhattan scan the 5x5 / 5x5x5 neighbourhood. The tileable exact-`===` periodicity
+(0006) is unchanged.
 
 Isolation (NS-01): two `createCellular` instances never cross-contaminate, and
 `seedCellular` never perturbs an instance -- an instance owns its seed, the module
@@ -145,8 +148,9 @@ whose lattice wrap carries a small seam-contrast floor. For a seamless bake set
 ## 3D (v1.2.0)
 
 `cellular3` / `tileableCell3` / `fillCellField3` lift the whole surface into 3D over
-the 3x3x3 = 27-cell neighbourhood -- a verbatim lift of the 2D decisions with the
-coordinate count bumped 2 -> 3 (decisions/0007). Same `{ f1, f2, id }` shape plus
+the per-metric neighbourhood (chebyshev 3x3x3 = 27 cells, euclid/manhattan 5x5x5 = 125
+cells; 0008) -- a verbatim lift of the 2D decisions with the coordinate count bumped
+2 -> 3 (decisions/0007). Same `{ f1, f2, id }` shape plus
 depth, same three metrics bound once (`cheby <= euclid <= manhattan` holds in R^3 for
 f1 and f2), same jitter/id/combo rules, and the same EXACT integer-cell tile wrap now
 on all three axes. The feature point of a 3D cell scatters via three decorrelated hash
@@ -188,7 +192,7 @@ const cracks = c.f2 - c.f1;            // Voronoi edges, caller-side
 - Curl/flow off cellular -- `f1` has derivative discontinuities at cell boundaries
   by construction, so it cannot feed an analytic flow field. Use lite-noise for flow.
 - Cryptographic seeding -- the hash is for reproducible scatter, not security.
-- World-scale beyond ~2^52 -- past the float64 integer limit the 3x3 neighbourhood
+- World-scale beyond ~2^52 -- past the float64 integer limit the neighbourhood
   degenerates (the pinned v1.0.0 limit; coords up to 1e12 stay fully precise).
 
 ## License

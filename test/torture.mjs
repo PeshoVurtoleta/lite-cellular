@@ -40,10 +40,15 @@
  * @license MIT
  */
 
-import { SEED, BREAK, BREAK_BAKER, BREAK_COMBOPARSE, BREAK_FLOATWRAP } from './torture/harness.mjs';
+import {
+    SEED, BREAK, BREAK_BAKER, BREAK_COMBOPARSE, BREAK_FLOATWRAP,
+    BREAK_PRECISION, BREAK_ORACLE, BREAK_MATRIX, BREAK_SOAK,
+} from './torture/harness.mjs';
 import { run as t0 } from './torture/t0-laws.mjs';
 import { run as t1 } from './torture/t1-degenerate.mjs';
+import { run as tMatrix } from './torture/t-matrix.mjs';
 import { run as t3 } from './torture/t3-worldscale.mjs';
+import { run as tOracle } from './torture/t-oracle.mjs';
 import { run as t5, SHARED_SEED_BREAK } from './torture/t5-fuzz.mjs';
 import { run as t6 } from './torture/t6-alloc.mjs';
 import { run as t7 } from './torture/t7-leak.mjs';
@@ -53,7 +58,9 @@ import { run as t9 } from './torture/t9-controls.mjs';
 const TIERS = [
     ['T0 laws', t0],
     ['T1 degenerate', t1],
+    ['T-MATRIX cross-product', tMatrix],
     ['T3 world-scale', t3],
+    ['T-ORACLE sufficiency', tOracle],
     ['T5 fuzz', t5],
     ['T6 alloc', t6],
     ['T7 leak', t7],
@@ -90,6 +97,10 @@ async function main() {
     }
     if (BREAK_BAKER || BREAK_COMBOPARSE || BREAK_FLOATWRAP) {
         process.stderr.write('torture: FAIL -- a C2 break control was set but its gate still passed\n');
+        process.exit(1);
+    }
+    if (BREAK_PRECISION || BREAK_ORACLE || BREAK_MATRIX || BREAK_SOAK) {
+        process.stderr.write('torture: FAIL -- a C4 break control was set but its gate still passed\n');
         process.exit(1);
     }
 

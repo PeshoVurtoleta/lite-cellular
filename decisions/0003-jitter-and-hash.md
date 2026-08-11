@@ -9,6 +9,13 @@ Depended on by: 0001-metric-selection (all three metrics share this placement),
   0004-cell-id (the id is a by-product of the same hash), and D-06 tileability
   (the wrap is exact only because the hash is a pure function of integer cell coords)
 
+> Superseded in part by 0008 (2026-08-10, v1.3.0): `jitter <= 1` keeps every feature
+> point inside its home cell, but that alone makes only CHEBYSHEV exact in the 3x3 /
+> 3x3x3 neighbourhood -- an L1/L2 unit-cell ball can reach a feature TWO cells away, so
+> euclid/manhattan scan 5x5 / 5x5x5. The claims below that "the 3x3 neighbourhood is
+> guaranteed to contain the true nearest" hold verbatim for chebyshev and, per metric,
+> at the widened radius for euclid/manhattan. The placement and hash are unchanged.
+
 Forward-dated on purpose (see 0001). This record fixes two things the whole
 package's determinism rests on: how far a feature point may move off its cell,
 and how the cell decides where its point goes.

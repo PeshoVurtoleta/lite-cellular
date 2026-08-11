@@ -49,6 +49,16 @@ function expected(id, ax, ay) {
     return Math.max(ax, ay); // chebyshev
 }
 
+/**
+ * The magnitude walk from the precise limit up to the collapse cliff. Between
+ * WORLD_SCALE_PRECISE (1e12) and WORLD_SCALE_DEGENERATE (2^52) the field is still finite
+ * and decided at every step -- never NaN, never a silent garbage value. At and beyond
+ * 2^52 the +/-cell offset falls below the float64 ULP and the neighbourhood collapses so
+ * f1 === f2 (the pinned degeneration). Widening to radius 2 (0008) does not move this
+ * cliff: a larger offset that is still below the ULP collapses the same way.
+ */
+const DEGRADE_WALK = [1e13, 1e14, 1e15, 2 ** 50, 2 ** 51];
+
 export function run() {
     const a = { f1: 0, f2: 0, id: 0 };
 
@@ -76,8 +86,18 @@ export function run() {
                 () => `T3[${name}].grid: f1=${a.f1} != nearest-centre ${exp} at |coord|=${mag}`);
         }
 
+        // The degradation walk from the precise limit toward the cliff: every step is
+        // finite and DECIDED (f1 <= f2, never NaN/garbage) -- the field degrades
+        // gracefully, it does not silently corrupt.
+        for (const mag of DEGRADE_WALK) {
+            c.cellular2(mag + 0.5, mag + 0.5, a);
+            assertHot(Number.isFinite(a.f1) && Number.isFinite(a.f2) && a.f1 <= a.f2,
+                () => `T3[${name}].degrade-walk: non-finite or f1>f2 at |coord|=${mag} (f1=${a.f1} f2=${a.f2})`);
+        }
+
         // The pinned degeneration boundary: finite coords, no throw, but the
-        // neighbourhood has collapsed so f1 == f2.
+        // neighbourhood has collapsed so f1 == f2. Unchanged by the radius-2 widening
+        // (0008): a wider offset still below the ULP collapses identically.
         c.cellular2(WORLD_SCALE_DEGENERATE, WORLD_SCALE_DEGENERATE, a);
         assertHot(Number.isFinite(a.f1) && a.f1 === a.f2,
             () => `T3[${name}].degenerate: expected f1==f2 at 2^52 (f1=${a.f1} f2=${a.f2}) -- pinned boundary moved`);

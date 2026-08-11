@@ -1,14 +1,19 @@
 /**
- * @zakkster/lite-cellular v1.2.0 -- hand-written types (no drift).
+ * @zakkster/lite-cellular v1.3.0 -- hand-written types (no drift).
  *
  * v1.0.0 (C1) opens the three distance metrics (euclidean/manhattan/chebyshev),
  * fixed at instance creation via an integer id, and adds the module free-function
  * surface (`cellular2`, `seedCellular`). v1.1.0 (C2) adds the two instance methods
  * `fillCellField2` (zero-alloc field bake, combo resolved once -- decisions/0005) and
  * `tileableCell2` (exact integer-cell wrap -- decisions/0006). v1.2.0 (C3) LIFTS the
- * whole surface into 3D -- `cellular3`, `fillCellField3`, `tileableCell3`, over the
- * 3x3x3 = 27-cell neighbourhood, a verbatim lift of 0001..0006 (decisions/0007).
+ * whole surface into 3D -- `cellular3`, `fillCellField3`, `tileableCell3` (decisions/0007).
  * Instance-only; there is no module 3D surface and no 4D.
+ *
+ * v1.3.0 (C4) makes the neighbourhood EXACT (decisions/0008): chebyshev is exact in the
+ * 3x3 / 3x3x3 neighbourhood, but an L1/L2 unit-cell ball can reach a feature TWO cells
+ * away, so euclidean and manhattan are widened to the 5x5 / 5x5x5 neighbourhood. Each
+ * metric's scan is now guaranteed to contain the true nearest and second-nearest feature
+ * (jitter <= 1). No API change; euclid/manhattan cost more, chebyshev unchanged.
  *
  * @license MIT
  */
@@ -127,8 +132,10 @@ export interface CellularOptions {
     metric?: number;
     /**
      * Feature-point scatter in [0, 1]: 0 = exact grid of centres, 1 = full Worley.
-     * `jitter <= 1` is the correctness precondition of the 3x3 scan (keeps every
-     * feature point inside its home cell). Default 1. See `decisions/0003`.
+     * `jitter <= 1` is the correctness precondition of the neighbourhood scan (keeps
+     * every feature point inside its home cell, so the exact radius per metric --
+     * chebyshev 3x3, euclid/manhattan 5x5 -- contains the true f1/f2; decisions/0003,
+     * 0008). Default 1. See `decisions/0003`.
      */
     jitter?: number;
 }
@@ -171,8 +178,9 @@ export declare class Cellular {
         dst: T, w: number, h: number, opts?: FillCellFieldOptions): T;
 
     /**
-     * Sample the 3D field at (x, y, z): the 3x3x3 = 27-cell lift of `cellular2`
-     * (`decisions/0007`). Returns `{ f1, f2, id }` -- the 2D shape plus depth -- in
+     * Sample the 3D field at (x, y, z): the 3D lift of `cellular2` (`decisions/0007`;
+     * chebyshev scans 3x3x3 = 27 cells, euclid/manhattan 5x5x5 = 125 cells per
+     * `decisions/0008`). Returns `{ f1, f2, id }` -- the 2D shape plus depth -- in
      * this instance's metric. Writes into `out` if given (and returns it), else the
      * reused struct. Zero allocation. THROWS on non-finite `x`, `y`, or `z`.
      * Instance-only: there is no module 3D surface (0007 Decision 4).

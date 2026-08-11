@@ -6,6 +6,12 @@ Anchor: D-01 (ROADMAP.md section 2)
 Owner: C1
 Depends on: C0 (the euclidean kernel + torture skeleton this generalises)
 
+> Superseded in part by 0008 (2026-08-10, v1.3.0): the per-query loop is no longer a
+> fixed 3x3 (9-cell) scan for every metric -- euclid/manhattan widened to 5x5 (25-cell)
+> for exactness, chebyshev stays 3x3. The monomorphic one-kernel-per-metric design here
+> is unchanged; only the loop RADIUS moved. Read "3x3 loop" below as "the neighbourhood
+> loop at each metric's exact radius".
+
 This record is written before C1 opens, to lock the shape of the hot loop while
 it is still one kernel. It is forward-dated on purpose: `Cellular.js` will cite it
 when the second and third metrics land, and per ROADMAP.md section 0.4 the cited
@@ -157,6 +163,19 @@ from the built v1.0.0 kernel on node v26.3.1 (see `bench/BASELINE.md`):
 | `cellular2` euclidean (scattered coords) | ~14.7 | 0 |
 | `cellular2` manhattan | ~9.5 | 0 |
 | `cellular2` chebyshev | ~8.5 | 0 |
+
+Backfill (v1.3.0, 0008): after widening euclid/manhattan to the 5x5 = 25-cell
+neighbourhood (chebyshev stays 3x3 = 9-cell), the same probes re-measure (best-of-5,
+node v26.3.1; see `bench/BASELINE.md`):
+
+| probe (v1.3.0) | Mops/s (indicative) | bytesPerCall (contract) |
+| --- | --- | --- |
+| `cellular2` euclidean | ~6.28 | 0 |
+| `cellular2` manhattan | ~4.95 | 0 |
+| `cellular2` chebyshev (unchanged, radius 1) | ~7.44 | 0 |
+
+The ~2.2x (euclid) / ~1.7x (manhattan) drop is the 25/9 cell-count ratio; chebyshev,
+untouched, is now the fastest metric. The alloc contract is unchanged: 0 bytes/call.
 
 Expectation to confirm, not assume (from the design lock): manhattan and chebyshev
 would be marginally faster than euclidean (no end-sqrt). If euclidean is not within

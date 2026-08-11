@@ -20,9 +20,13 @@ import {
     METRIC_EUCLIDEAN, METRIC_MANHATTAN, METRIC_CHEBYSHEV, VERSION,
 } from '../Cellular.js';
 
-const OPS = 200000;
-const WARMUP = 8000;
+// Op counts tuned down for the widened euclid/manhattan kernels (5x5 = 25 / 5x5x5 =
+// 125 cells; 0008): throughput is INDICATIVE, so smaller counts are fine. best-of-5 is
+// kept, and `bytesPerCall: 0` (the contract) is unaffected by op count.
+const OPS = 60000;
+const WARMUP = 4000;
 const REPS = 5;
+const ALLOC_ITER = 8000;
 const OUT = { f1: 0, f2: 0, id: 0 };
 
 function bestOfOpsPerSec(fn) {
@@ -37,7 +41,7 @@ function bestOfOpsPerSec(fn) {
 function minBytesPerCall(fn) {
     let best = Infinity;
     for (let k = 0; k < REPS; k++) {
-        const r = measureAllocs(fn, { iterations: 20000, batches: 8 });
+        const r = measureAllocs(fn, { iterations: ALLOC_ITER, batches: 8 });
         if (r.bytesPerCall < best) best = r.bytesPerCall;
     }
     return best;
@@ -108,7 +112,7 @@ function makeTileHot3(id) {
 // ops/sec (fields per second) and bytesPerCall (per-bake retained bytes -- the C2
 // contract is 0).
 const BW = 64, BH = 64;
-const BAKE_OPS = 4000, BAKE_WARMUP = 200, BAKE_ITER = 800, BAKE_BATCH = 4;
+const BAKE_OPS = 1500, BAKE_WARMUP = 100, BAKE_ITER = 300, BAKE_BATCH = 4;
 
 function makeBakeHot(id, combo, tiling) {
     const inst = createCellular(1337, { metric: id, jitter: 1 });
@@ -137,7 +141,7 @@ function probeBake(label, id, combo, tiling) {
 // The 3D volume bake bench: one fillCellField3 call is one op (a whole VW*VH*VD
 // volume). Smaller extents than the 2D field so an op stays comparable in voxel count.
 const VW = 24, VH = 24, VD = 24;
-const VBAKE_OPS = 800, VBAKE_WARMUP = 40, VBAKE_ITER = 160, VBAKE_BATCH = 4;
+const VBAKE_OPS = 250, VBAKE_WARMUP = 20, VBAKE_ITER = 60, VBAKE_BATCH = 4;
 
 function makeBakeHot3(id, combo, tiling) {
     const inst = createCellular(1337, { metric: id, jitter: 1 });
